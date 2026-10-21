@@ -125,7 +125,7 @@ No aplica. No hay cambios de esquema. Los hashes de contraseña existentes sigue
 - [x] **T5** (~10 min) — Tests rojos de autorización de pedidos: cliente → 403 en `/orders/active` y en `PATCH .../status`; cocinero de otro restaurante → 403; cliente ajeno → 403 en `GET /orders/:id` · Archivo: `packages/api/src/routes/order.routes.test.ts` (Crear) · Hecho cuando: los tests fallan por la razón esperada
 - [x] **T6** (~8 min) — Añadir `authorize([...personal])` en `order.routes.ts` para `/active` y `/status` · Archivo: `packages/api/src/routes/order.routes.ts` · Hecho cuando: los casos de cliente de T5 pasan
 - [x] **T7** (~10 min) — Comprobar pertenencia por restaurante/dueño en `OrderService` (`getById`, `updateItemStatus`) y `listActive` con el restaurante del token (el query solo lo respeta un admin) · Archivo: `services/order.service.ts`, `controllers/order.controller.ts` · Hecho cuando: pasan todos los tests de T5
-- [ ] **T8** (~7 min) — Cambiar los `catch` del `OrderController` a `next(error)` y mapear `OrderNotFoundError` (404) en el `errorHandler`, sin devolver `error.message` de errores no controlados (H-11) · Archivo: `order.controller.ts`, `errorHandler.ts` · Hecho cuando: un test con error interno devuelve 500 genérico y uno con pedido inexistente devuelve 404
+- [x] **T8** (~7 min) — Cambiar los `catch` del `OrderController` a `next(error)` y mapear `OrderNotFoundError` (404) en el `errorHandler`, sin devolver `error.message` de errores no controlados (H-11) · Archivo: `order.controller.ts`, `errorHandler.ts` · Hecho cuando: un test con error interno devuelve 500 genérico y uno con pedido inexistente devuelve 404
 
 ### Fase 2: altas (API)
 

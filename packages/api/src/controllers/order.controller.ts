@@ -1,12 +1,10 @@
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import type { AuthenticatedUser, OrderService } from '@services/order.service.js'
-
-const sinPermiso = (error: unknown): boolean => error instanceof Error && error.name === 'ForbiddenError'
 
 export class OrderController {
     constructor(private readonly orderService: OrderService) {}
 
-    async createOrder(req: Request, res: Response): Promise<void> {
+    async createOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const { restaurantId, tableId, items } = req.body
             const user = (req as any).user
@@ -19,15 +17,11 @@ export class OrderController {
             })
             res.status(201).json(order)
         } catch (error) {
-            if (error instanceof Error) {
-                res.status(400).json({ error: error.message })
-            } else {
-                res.status(500).json({ error: 'Internal Server Error' })
-            }
+            next(error)
         }
     }
 
-    async getActiveOrders(req: Request, res: Response): Promise<void> {
+    async getActiveOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const user = (req as any).user as AuthenticatedUser
             const { restaurantId } = req.query
@@ -39,15 +33,11 @@ export class OrderController {
             const orders = await this.orderService.listActive(user, String(restaurantId ?? ''))
             res.status(200).json(orders)
         } catch (error) {
-            if (sinPermiso(error)) {
-                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
-                return
-            }
-            res.status(500).json({ error: 'Internal Server Error' })
+            next(error)
         }
     }
 
-    async getMyOrders(req: Request, res: Response): Promise<void> {
+    async getMyOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const user = (req as any).user
             if (!user?.id) {
@@ -57,28 +47,20 @@ export class OrderController {
             const orders = await this.orderService.getByClientId(user.id)
             res.status(200).json(orders)
         } catch (error) {
-            res.status(500).json({ error: 'Internal Server Error' })
+            next(error)
         }
     }
 
-    async getById(req: Request, res: Response): Promise<void> {
+    async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const order = await this.orderService.getById(req.params.id as string, (req as any).user)
             res.status(200).json(order)
         } catch (error) {
-            if (sinPermiso(error)) {
-                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
-                return
-            }
-            if (error instanceof Error && error.name === 'OrderNotFoundError') {
-                res.status(404).json({ error: error.message })
-            } else {
-                res.status(500).json({ error: 'Internal Server Error' })
-            }
+            next(error)
         }
     }
 
-    async updateItemStatus(req: Request, res: Response): Promise<void> {
+    async updateItemStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const orderId = req.params.orderId as string
             const itemId = req.params.itemId as string
@@ -87,15 +69,7 @@ export class OrderController {
             await this.orderService.updateItemStatus(orderId, itemId, status, (req as any).user)
             res.status(204).send()
         } catch (error) {
-            if (sinPermiso(error)) {
-                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
-                return
-            }
-            if (error instanceof Error && (error.name === 'OrderNotFoundError' || error.name === 'InvalidOrderStatusError')) {
-                res.status(400).json({ error: error.message })
-            } else {
-                res.status(500).json({ error: 'Internal Server Error' })
-            }
+            next(error)
         }
     }
 }

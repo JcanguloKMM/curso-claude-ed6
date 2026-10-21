@@ -40,6 +40,17 @@ describe('Autorización de rutas de pedidos (H-03)', () => {
         await dbConfig.close()
     })
 
+    describe('POST /orders', () => {
+        it('devuelve 500 genérico, sin filtrar el mensaje interno, ante un fallo inesperado', async () => {
+            const res = await request(app)
+                .post('/api/v1/orders')
+                .set(auth(clienteDueno))
+                .send({ restaurantId: 'rest-a', items: [{ dishId: 'plato-inexistente', quantity: 1, notes: null }] })
+            expect(res.status).toBe(500)
+            expect(JSON.stringify(res.body)).not.toMatch(/SQLITE|FOREIGN KEY/i)
+        })
+    })
+
     describe('GET /orders/active', () => {
         it('devuelve 403 a un cliente', async () => {
             const res = await request(app).get('/api/v1/orders/active?restaurantId=rest-a').set(auth(clienteDueno))
@@ -70,6 +81,16 @@ describe('Autorización de rutas de pedidos (H-03)', () => {
         it('devuelve 403 a un cocinero de otro restaurante', async () => {
             const res = await request(app).patch(url).set(auth(cocineroB)).send({ status: 'listo' })
             expect(res.status).toBe(403)
+        })
+
+        it('devuelve 404 si el pedido no existe', async () => {
+            const res = await request(app).patch('/api/v1/orders/no-existe/items/x/status').set(auth(admin)).send({ status: 'listo' })
+            expect(res.status).toBe(404)
+        })
+
+        it('devuelve 400 si el estado es inválido', async () => {
+            const res = await request(app).patch(url).set(auth(cocineroA)).send({ status: 'volando' })
+            expect(res.status).toBe(400)
         })
 
         it('permite a un cocinero del mismo restaurante', async () => {
