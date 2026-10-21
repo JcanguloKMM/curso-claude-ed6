@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$(basename \"$f\")\" in CONSTANTS.js) echo 'Bloqueado: la lectura de CONSTANTS.js no está permitida.' >&2; exit 2;; esac"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" :"1"
+  }
+}
