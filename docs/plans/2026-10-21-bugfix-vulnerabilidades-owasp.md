@@ -2,7 +2,7 @@
 
 - **Tipo:** bug (seguridad)
 - **Fecha:** 2026-10-21
-- **Estado:** Pendiente
+- **Estado:** En curso
 
 ## 1. Resumen
 
@@ -118,7 +118,7 @@ No aplica. No hay cambios de esquema. Los hashes de contraseña existentes sigue
 
 ### Fase 1: críticas (API)
 
-- [ ] **T1** (~5 min) — Reproducir H-02 y H-03: ejecutar `npm audit` base y un test que fabrique un JWT admin con el secreto por defecto y llame a `GET /api/v1/employees` · Archivo: `packages/api/src/security/jwt-secret.test.ts` (Crear) · Hecho cuando: el test falla (rojo), demostrando el problema
+- [x] **T1** (~5 min) — Reproducir H-02 y H-03: ejecutar `npm audit` base y un test que fabrique un JWT admin con el secreto por defecto y llame a `GET /api/v1/employees` · Archivo: `packages/api/src/security/jwt-secret.test.ts` (Crear) · Hecho cuando: el test falla (rojo), demostrando el problema
 - [ ] **T2** (~8 min) — Crear `env.ts` con validación de `JWT_SECRET` (obligatorio, mínimo 32 caracteres, valor fijo solo en `NODE_ENV=test`) y su test unitario · Archivo: `packages/api/src/config/env.ts` · Hecho cuando: el test de `env` pasa para secreto ausente, corto y válido
 - [ ] **T3** (~7 min) — Usar `env.ts` en `middlewares.ts` y `BcryptAuthService.ts`, y fijar `algorithms: ['HS256']` en `verify` y `sign` · Archivo: `middlewares.ts`, `BcryptAuthService.ts` · Hecho cuando: el test de T1 pasa (token firmado con el secreto antiguo devuelve 401) y `npm test` sigue en verde
 - [ ] **T4** (~10 min) — Añadir `authorizeRestaurant` en `middlewares.ts` con tests (admin pasa, mismo restaurante pasa, otro restaurante 403) · Archivo: `packages/api/src/contexts/shared/infrastructure/http/middlewares.test.ts` (Crear) y `middlewares.ts` · Hecho cuando: los tres casos pasan
