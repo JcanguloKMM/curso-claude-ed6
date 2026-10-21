@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express'
-import type { OrderService } from '@services/order.service.js'
+import type { AuthenticatedUser, OrderService } from '@services/order.service.js'
+
+const sinPermiso = (error: unknown): boolean => error instanceof Error && error.name === 'ForbiddenError'
 
 export class OrderController {
     constructor(private readonly orderService: OrderService) {}
@@ -27,15 +29,20 @@ export class OrderController {
 
     async getActiveOrders(req: Request, res: Response): Promise<void> {
         try {
+            const user = (req as any).user as AuthenticatedUser
             const { restaurantId } = req.query
-            if (!restaurantId || typeof restaurantId !== 'string') {
+            if (user.role === 'admin' && (!restaurantId || typeof restaurantId !== 'string')) {
                 res.status(400).json({ error: 'restaurantId is required' })
                 return
             }
 
-            const orders = await this.orderService.listActive(restaurantId)
+            const orders = await this.orderService.listActive(user, String(restaurantId ?? ''))
             res.status(200).json(orders)
         } catch (error) {
+            if (sinPermiso(error)) {
+                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
+                return
+            }
             res.status(500).json({ error: 'Internal Server Error' })
         }
     }
@@ -56,9 +63,13 @@ export class OrderController {
 
     async getById(req: Request, res: Response): Promise<void> {
         try {
-            const order = await this.orderService.getById(req.params.id as string)
+            const order = await this.orderService.getById(req.params.id as string, (req as any).user)
             res.status(200).json(order)
         } catch (error) {
+            if (sinPermiso(error)) {
+                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
+                return
+            }
             if (error instanceof Error && error.name === 'OrderNotFoundError') {
                 res.status(404).json({ error: error.message })
             } else {
@@ -73,9 +84,13 @@ export class OrderController {
             const itemId = req.params.itemId as string
             const { status } = req.body
 
-            await this.orderService.updateItemStatus(orderId, itemId, status)
+            await this.orderService.updateItemStatus(orderId, itemId, status, (req as any).user)
             res.status(204).send()
         } catch (error) {
+            if (sinPermiso(error)) {
+                res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
+                return
+            }
             if (error instanceof Error && (error.name === 'OrderNotFoundError' || error.name === 'InvalidOrderStatusError')) {
                 res.status(400).json({ error: error.message })
             } else {
