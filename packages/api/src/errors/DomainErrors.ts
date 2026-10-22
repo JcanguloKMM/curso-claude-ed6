@@ -168,6 +168,60 @@ export class InvalidTableStatusError extends AppError {
   }
 }
 
+export class TableNotFoundError extends AppError {
+  constructor() {
+    super('Mesa no encontrada')
+  }
+}
+
+export class InvalidTableNumberError extends AppError {
+  constructor() {
+    super('El número de mesa debe ser un entero mayor o igual que 1')
+  }
+}
+
+export class InvalidTableCapacityError extends AppError {
+  constructor() {
+    super('La capacidad de la mesa debe ser un entero mayor o igual que 1')
+  }
+}
+
+export class InvalidTableDescriptionError extends AppError {
+  constructor() {
+    super('La descripción de la mesa debe ser un texto')
+  }
+}
+
+export class DuplicatedTableNumberError extends AppError {
+  constructor() {
+    super('Ya existe una mesa con ese número en el restaurante')
+  }
+}
+
+export class TableOccupiedError extends AppError {
+  constructor() {
+    super('No se puede borrar una mesa ocupada')
+  }
+}
+
+export class TableNotAvailableError extends AppError {
+  constructor() {
+    super('La mesa no está libre')
+  }
+}
+
+export class InvalidPeopleCountError extends AppError {
+  constructor() {
+    super('El número de personas debe ser un entero mayor o igual que 1')
+  }
+}
+
+export class TableCapacityExceededError extends AppError {
+  constructor() {
+    super('El número de personas supera la capacidad de la mesa')
+  }
+}
+
 export class ForbiddenError extends AppError {
   constructor() {
     super('Forbidden: Insufficient permissions')
