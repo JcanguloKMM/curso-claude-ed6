@@ -217,3 +217,104 @@ describe('CRUD de mesas: /api/v1/restaurants/:restaurantId/tables', () => {
         })
     })
 })
+
+describe('Flujo del cliente: mesas disponibles y ocupación', () => {
+    const publica = '/api/v1/public/restaurants/rest-c/tables'
+    const privada = '/api/v1/restaurants/rest-c/tables'
+
+    beforeAll(async () => {
+        await dbConfig.run(
+            'INSERT INTO restaurants (id, name, address, email, phone, owner_first_name, owner_last_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ['rest-c', 'rest-c', 'dir', 'rest-c@x.com', '600000000', 'a', 'b', ahora, ahora]
+        )
+        await insertarMesa('c-1', 'rest-c', 1, 2)
+        await insertarMesa('c-2', 'rest-c', 2, 6)
+        await insertarMesa('c-3', 'rest-c', 3, 4)
+        await insertarMesa('c-4', 'rest-c', 4, 4)
+        await insertarMesa('c-5', 'rest-c', 5, 8, 'ocupada')
+        await insertarMesa('c-6', 'rest-c', 6, 8, 'reservada')
+    })
+
+    describe('GET público de mesas disponibles', () => {
+        it('filtra por personas y ordena por capacidad y número', async () => {
+            const res = await request(app).get(`${publica}?people=4`)
+            expect(res.status).toBe(200)
+            expect(res.body.map((m: any) => m.id)).toEqual(['c-3', 'c-4', 'c-2'])
+            expect(res.body.every((m: any) => m.status === 'libre')).toBe(true)
+        })
+
+        it('devuelve [] si ninguna mesa libre admite el grupo', async () => {
+            const res = await request(app).get(`${publica}?people=7`)
+            expect(res.status).toBe(200)
+            expect(res.body).toEqual([])
+        })
+
+        it('ignora un token no válido', async () => {
+            const res = await request(app).get(`${publica}?people=2`).set(auth('token-roto'))
+            expect(res.status).toBe(200)
+        })
+
+        it.each(['?people=0', '?people=abc', '?people=2.5', '?people=-1', '', '?people=2&people=3'])(
+            'responde 400 InvalidPeopleCountError con "%s"',
+            async (query) => {
+                const res = await request(app).get(`${publica}${query}`)
+                expect(res.status).toBe(400)
+                expect(res.body).toEqual({ error: 'InvalidPeopleCountError', message: 'El número de personas debe ser un entero mayor o igual que 1' })
+            }
+        )
+    })
+
+    describe('POST occupy', () => {
+        it('sin token responde 401', async () => {
+            const res = await request(app).post(`${privada}/c-1/occupy`).send({ people: 2 })
+            expect(res.status).toBe(401)
+        })
+
+        it.each([
+            ['camarero', token({ id: 'camarero-c', role: 'camarero', restaurantId: 'rest-c' })],
+            ['admin', admin]
+        ])('un %s recibe 403', async (_rol, t) => {
+            const res = await request(app).post(`${privada}/c-1/occupy`).set(auth(t)).send({ people: 2 })
+            expect(res.status).toBe(403)
+            expect(res.body).toEqual(PROHIBIDO)
+        })
+
+        it('el cliente ocupa una mesa libre (200) y la mesa pasa a ocupada', async () => {
+            const res = await request(app).post(`${privada}/c-3/occupy`).set(auth(cliente)).send({ people: 4 })
+            expect(res.status).toBe(200)
+            expect(res.body).toMatchObject({ id: 'c-3', restaurantId: 'rest-c', number: 3, capacity: 4, status: 'ocupada' })
+
+            const disponibles = await request(app).get(`${publica}?people=1`)
+            expect(disponibles.body.map((m: any) => m.id)).not.toContain('c-3')
+        })
+
+        it('una segunda ocupación de la misma mesa responde 409 TableNotAvailableError', async () => {
+            const res = await request(app).post(`${privada}/c-3/occupy`).set(auth(cliente)).send({ people: 2 })
+            expect(res.status).toBe(409)
+            expect(res.body).toEqual({ error: 'TableNotAvailableError', message: 'La mesa no está libre' })
+        })
+
+        it('no deja ocupar una mesa reservada (409)', async () => {
+            const res = await request(app).post(`${privada}/c-6/occupy`).set(auth(cliente)).send({ people: 2 })
+            expect(res.status).toBe(409)
+        })
+
+        it('si el grupo supera la capacidad responde 400 TableCapacityExceededError', async () => {
+            const res = await request(app).post(`${privada}/c-1/occupy`).set(auth(cliente)).send({ people: 3 })
+            expect(res.status).toBe(400)
+            expect(res.body.error).toBe('TableCapacityExceededError')
+        })
+
+        it.each([{ people: 0 }, { people: '2' }, {}])('people no válido (%o) responde 400 InvalidPeopleCountError', async (body) => {
+            const res = await request(app).post(`${privada}/c-1/occupy`).set(auth(cliente)).send(body)
+            expect(res.status).toBe(400)
+            expect(res.body.error).toBe('InvalidPeopleCountError')
+        })
+
+        it('una mesa de otro restaurante en la URL responde 404', async () => {
+            const res = await request(app).post(`${privada}/b-1/occupy`).set(auth(cliente)).send({ people: 2 })
+            expect(res.status).toBe(404)
+            expect(res.body.error).toBe('TableNotFoundError')
+        })
+    })
+})
