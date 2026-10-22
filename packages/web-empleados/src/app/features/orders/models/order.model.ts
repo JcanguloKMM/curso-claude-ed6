@@ -6,15 +6,17 @@ export interface OrderItem {
   quantity: number
   notes: string | null
   status: OrderStatus
-  dishName?: string
-  dishPrice?: number
-  dishCategory?: string
+  // null si el plato ya no existe
+  dishName?: string | null
+  dishPrice?: number | null
+  dishCategory?: string | null
 }
 
 export interface Order {
   id: string
   restaurantId: string
   tableId: string | null
+  tableNumber?: number | null
   clientId: string | null
   createdAt: string
   items: OrderItem[]
