@@ -11,6 +11,13 @@ const token = (payload: { id: string; role: string; restaurantId: string | null 
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` })
 
 const admin = token({ id: 'admin-1', role: 'admin', restaurantId: null })
+const managerA = token({ id: 'manager-a', role: 'manager', restaurantId: 'rest-a' })
+const camareroA = token({ id: 'camarero-a', role: 'camarero', restaurantId: 'rest-a' })
+const cocineroA = token({ id: 'cocinero-a', role: 'cocinero', restaurantId: 'rest-a' })
+const cocineroB = token({ id: 'cocinero-b', role: 'cocinero', restaurantId: 'rest-b' })
+const cliente = token({ id: 'cliente-1', role: 'cliente', restaurantId: null })
+
+const PROHIBIDO = { error: 'Forbidden: Insufficient permissions' }
 
 const ahora = '2026-10-22T08:00:00.000Z'
 
@@ -56,5 +63,157 @@ describe('Montaje de las rutas de mesas', () => {
         const res = await request(app).get('/api/v1/restaurants/rest-a/tables').set(auth(admin))
         expect(res.status).toBe(200)
         expect(res.body.map((m: any) => m.id)).toEqual(['a-1', 'a-2', 'a-3', 'a-4'])
+    })
+})
+
+describe('CRUD de mesas: /api/v1/restaurants/:restaurantId/tables', () => {
+    const url = '/api/v1/restaurants/rest-a/tables'
+
+    describe('lectura', () => {
+        it.each([
+            ['manager', managerA],
+            ['camarero', camareroA],
+            ['cocinero', cocineroA]
+        ])('el %s del restaurante lista las mesas ordenadas por número', async (_rol, t) => {
+            const res = await request(app).get(url).set(auth(t))
+            expect(res.status).toBe(200)
+            expect(res.body.map((m: any) => m.number)).toEqual([1, 2, 3, 4])
+        })
+
+        it('el cocinero de otro restaurante recibe 403 en GET', async () => {
+            const res = await request(app).get(url).set(auth(cocineroB))
+            expect(res.status).toBe(403)
+            expect(res.body).toEqual(PROHIBIDO)
+        })
+
+        it('un cliente recibe 403 en GET', async () => {
+            const res = await request(app).get(url).set(auth(cliente))
+            expect(res.status).toBe(403)
+        })
+
+        it('el detalle devuelve la mesa con el formato del contrato', async () => {
+            const res = await request(app).get(`${url}/a-1`).set(auth(camareroA))
+            expect(res.status).toBe(200)
+            expect(res.body).toEqual({
+                id: 'a-1',
+                restaurantId: 'rest-a',
+                number: 1,
+                description: 'Ventana',
+                capacity: 2,
+                status: 'ocupada',
+                createdAt: ahora,
+                updatedAt: ahora
+            })
+        })
+
+        it('el detalle de una mesa de otro restaurante devuelve 404 TableNotFoundError', async () => {
+            const res = await request(app).get(`${url}/b-1`).set(auth(admin))
+            expect(res.status).toBe(404)
+            expect(res.body).toEqual({ error: 'TableNotFoundError', message: 'Mesa no encontrada' })
+        })
+    })
+
+    describe('alta, edición y borrado', () => {
+        it('un cliente recibe 403 en POST', async () => {
+            const res = await request(app).post(url).set(auth(cliente)).send({ number: 50, capacity: 2 })
+            expect(res.status).toBe(403)
+            expect(res.body).toEqual(PROHIBIDO)
+        })
+
+        it.each([
+            ['manager', managerA],
+            ['camarero', camareroA]
+        ])('el %s recibe 403 en POST, PUT y DELETE', async (_rol, t) => {
+            expect((await request(app).post(url).set(auth(t)).send({ number: 50, capacity: 2 })).status).toBe(403)
+            expect((await request(app).put(`${url}/a-2`).set(auth(t)).send({ number: 2, capacity: 4 })).status).toBe(403)
+            expect((await request(app).delete(`${url}/a-2`).set(auth(t))).status).toBe(403)
+        })
+
+        it('el admin crea una mesa (201) y un número repetido da 409 DuplicatedTableNumberError', async () => {
+            const alta = await request(app).post(url).set(auth(admin)).send({ number: 20, description: 'Terraza', capacity: 6 })
+            expect(alta.status).toBe(201)
+            expect(alta.body).toMatchObject({ restaurantId: 'rest-a', number: 20, description: 'Terraza', capacity: 6, status: 'libre' })
+
+            const repetida = await request(app).post(url).set(auth(admin)).send({ number: 20, capacity: 2 })
+            expect(repetida.status).toBe(409)
+            expect(repetida.body).toEqual({ error: 'DuplicatedTableNumberError', message: 'Ya existe una mesa con ese número en el restaurante' })
+        })
+
+        it('datos no válidos al crear dan 400 con el error de dominio', async () => {
+            const capacidad = await request(app).post(url).set(auth(admin)).send({ number: 21, capacity: 0 })
+            expect(capacidad.status).toBe(400)
+            expect(capacidad.body.error).toBe('InvalidTableCapacityError')
+
+            const numero = await request(app).post(url).set(auth(admin)).send({ number: 'a', capacity: 2 })
+            expect(numero.status).toBe(400)
+            expect(numero.body.error).toBe('InvalidTableNumberError')
+        })
+
+        it('un POST sin cuerpo JSON da 400 y no 500', async () => {
+            const res = await request(app).post(url).set(auth(admin))
+            expect(res.status).toBe(400)
+            expect(res.body.error).toBe('InvalidTableNumberError')
+        })
+
+        it('el admin edita una mesa y conserva el estado si no lo envía', async () => {
+            const res = await request(app).put(`${url}/a-1`).set(auth(admin)).send({ number: 1, description: 'Ventana grande', capacity: 3 })
+            expect(res.status).toBe(200)
+            expect(res.body).toMatchObject({ id: 'a-1', number: 1, description: 'Ventana grande', capacity: 3, status: 'ocupada' })
+        })
+
+        it('editar con el número de otra mesa da 409', async () => {
+            const res = await request(app).put(`${url}/a-1`).set(auth(admin)).send({ number: 2, capacity: 3 })
+            expect(res.status).toBe(409)
+            expect(res.body.error).toBe('DuplicatedTableNumberError')
+        })
+
+        it('borrar una mesa ocupada da 409 TableOccupiedError', async () => {
+            const res = await request(app).delete(`${url}/a-1`).set(auth(admin))
+            expect(res.status).toBe(409)
+            expect(res.body).toEqual({ error: 'TableOccupiedError', message: 'No se puede borrar una mesa ocupada' })
+        })
+
+        it('borrar una mesa reservada responde 204 sin cuerpo', async () => {
+            await insertarMesa('a-9', 'rest-a', 9, 2, 'reservada')
+            const res = await request(app).delete(`${url}/a-9`).set(auth(admin))
+            expect(res.status).toBe(204)
+            expect(res.text).toBe('')
+            expect((await request(app).get(`${url}/a-9`).set(auth(admin))).status).toBe(404)
+        })
+
+        it('borrar una mesa de otro restaurante da 404', async () => {
+            const res = await request(app).delete(`${url}/b-1`).set(auth(admin))
+            expect(res.status).toBe(404)
+        })
+    })
+
+    describe('cambio de estado', () => {
+        it('el camarero del restaurante cambia el estado (200)', async () => {
+            const res = await request(app).patch(`${url}/a-4/status`).set(auth(camareroA)).send({ status: 'libre' })
+            expect(res.status).toBe(200)
+            expect(res.body).toMatchObject({ id: 'a-4', status: 'libre' })
+        })
+
+        it('el cocinero del restaurante también puede cambiar el estado', async () => {
+            const res = await request(app).patch(`${url}/a-4/status`).set(auth(cocineroA)).send({ status: 'reservada' })
+            expect(res.status).toBe(200)
+            expect(res.body.status).toBe('reservada')
+        })
+
+        it('un estado inválido da 400 InvalidTableStatusError', async () => {
+            const res = await request(app).patch(`${url}/a-4/status`).set(auth(camareroA)).send({ status: 'rota' })
+            expect(res.status).toBe(400)
+            expect(res.body).toEqual({ error: 'InvalidTableStatusError', message: 'Estado inválido: rota. Debe ser uno de: libre, ocupada, reservada' })
+        })
+
+        it('el personal de otro restaurante recibe 403 y un cliente también', async () => {
+            expect((await request(app).patch(`${url}/a-4/status`).set(auth(cocineroB)).send({ status: 'libre' })).status).toBe(403)
+            expect((await request(app).patch(`${url}/a-4/status`).set(auth(cliente)).send({ status: 'libre' })).status).toBe(403)
+        })
+
+        it('una mesa de otro restaurante da 404', async () => {
+            const res = await request(app).patch(`${url}/b-1/status`).set(auth(admin)).send({ status: 'libre' })
+            expect(res.status).toBe(404)
+        })
     })
 })
