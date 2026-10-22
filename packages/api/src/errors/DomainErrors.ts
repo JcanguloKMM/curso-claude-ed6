@@ -162,3 +162,9 @@ export class OrderNotFoundError extends AppError {
   }
 }
 
+
+export class ForbiddenError extends AppError {
+  constructor() {
+    super('Forbidden: Insufficient permissions')
+  }
+}

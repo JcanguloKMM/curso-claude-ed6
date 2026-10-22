@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
-
-const JWT_SECRET: string = process.env.JWT_SECRET || 'super-secret-resttek-key'
+import { env } from '@config/env.js'
 
 export interface AuthRequest extends Request {
     user?: any
@@ -22,7 +21,7 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     }
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET)
+        const decoded = jwt.verify(token, env.jwtSecret, { algorithms: ['HS256'] })
         req.user = decoded
         next()
     } catch {
@@ -38,4 +37,13 @@ export const authorize = (roles: string[]) => {
         }
         next()
     }
+}
+
+export const authorizeRestaurant = (req: AuthRequest, res: Response, next: NextFunction): void => {
+    const user = req.user
+    if (user && (user.role === 'admin' || user.restaurantId === req.params.restaurantId)) {
+        next()
+        return
+    }
+    res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
 }

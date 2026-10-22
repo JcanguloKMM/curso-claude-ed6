@@ -5,7 +5,12 @@ const NOT_FOUND_ERRORS = [
     'EmployeeNotFoundError',
     'RestaurantNotFoundError',
     'IngredientNotFoundError',
-    'DishNotFoundError'
+    'DishNotFoundError',
+    'OrderNotFoundError'
+]
+
+const FORBIDDEN_ERRORS = [
+    'ForbiddenError'
 ]
 
 const UNAUTHORIZED_ERRORS = [
@@ -18,6 +23,8 @@ export const errorHandler = (err: any, _req: Request, res: Response, _next: Next
 
         if (NOT_FOUND_ERRORS.includes(err.name)) {
             statusCode = 404
+        } else if (FORBIDDEN_ERRORS.includes(err.name)) {
+            statusCode = 403
         } else if (UNAUTHORIZED_ERRORS.includes(err.name)) {
             statusCode = 401
         }
