@@ -162,6 +162,11 @@ export class OrderNotFoundError extends AppError {
   }
 }
 
+export class InvalidTableStatusError extends AppError {
+  constructor(message?: string) {
+    super(message ?? 'Estado de mesa inválido')
+  }
+}
 
 export class ForbiddenError extends AppError {
   constructor() {
