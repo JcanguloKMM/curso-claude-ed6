@@ -52,6 +52,8 @@ export class OrderStore {
   }
 
   startPolling(restaurantId: string): void {
+    // Evita dejar intervalos huérfanos si se llama dos veces sin stopPolling
+    this.stopPolling();
     this.loadOrders(restaurantId);
     this.pollingInterval = setInterval(() => {
       this.loadOrders(restaurantId);
