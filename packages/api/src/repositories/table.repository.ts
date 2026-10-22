@@ -1,5 +1,5 @@
 import { Database } from '@config/database.js'
-import type { Table } from '@models/table.model.js'
+import type { Table, TableStatusType } from '@models/table.model.js'
 import { normalizeTableStatus } from '@models/table.model.js'
 
 interface TableRow {
@@ -21,6 +21,9 @@ export interface TableRepository {
     findByNumber(restaurantId: string, number: number): Promise<Table | null>
     save(table: Table): Promise<void>
     delete(id: string): Promise<void>
+    findAvailable(restaurantId: string, minCapacity: number): Promise<Table[]>
+    updateStatus(id: string, status: TableStatusType, updatedAt: string): Promise<void>
+    occupyIfFree(id: string, restaurantId: string, updatedAt: string): Promise<boolean>
 }
 
 export class SqliteTableRepository implements TableRepository {
@@ -60,6 +63,27 @@ export class SqliteTableRepository implements TableRepository {
 
     async delete(id: string): Promise<void> {
         await this.db.run('DELETE FROM restaurant_tables WHERE id = ?', [id])
+    }
+
+    async findAvailable(restaurantId: string, minCapacity: number): Promise<Table[]> {
+        const rows = await this.db.all<TableRow>(
+            `${SELECT_TABLE} WHERE restaurant_id = ? AND status = 'libre' AND capacity >= ? ORDER BY capacity, number`,
+            [restaurantId, minCapacity]
+        )
+        return rows.map(row => this.mapToTable(row))
+    }
+
+    async updateStatus(id: string, status: TableStatusType, updatedAt: string): Promise<void> {
+        await this.db.run('UPDATE restaurant_tables SET status = ?, updated_at = ? WHERE id = ?', [status, updatedAt, id])
+    }
+
+    // UPDATE condicional: si dos clientes ocupan la misma mesa a la vez, solo uno modifica la fila
+    async occupyIfFree(id: string, restaurantId: string, updatedAt: string): Promise<boolean> {
+        const result = await this.db.run(
+            "UPDATE restaurant_tables SET status = 'ocupada', updated_at = ? WHERE id = ? AND restaurant_id = ? AND status = 'libre'",
+            [updatedAt, id, restaurantId]
+        )
+        return result.changes > 0
     }
 
     private mapToTable(row: TableRow): Table {

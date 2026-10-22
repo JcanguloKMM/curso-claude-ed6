@@ -128,3 +128,66 @@ describe('SqliteTableRepository (integración)', () => {
         expect(await repo.findById('t2')).toBeNull()
     })
 })
+
+describe('SqliteTableRepository: disponibilidad y estado (integración)', () => {
+    let db: Database
+    let repo: SqliteTableRepository
+
+    beforeAll(async () => {
+        process.env.NODE_ENV = 'test'
+        db = new Database()
+        await db.initialize()
+        await insertarRestaurante(db, 'r1')
+        await insertarRestaurante(db, 'r2')
+        repo = new SqliteTableRepository(db)
+
+        await repo.save(mesa({ id: 'a1', number: 1, capacity: 2 }))
+        await repo.save(mesa({ id: 'a2', number: 2, capacity: 6 }))
+        await repo.save(mesa({ id: 'a3', number: 3, capacity: 4 }))
+        await repo.save(mesa({ id: 'a4', number: 4, capacity: 4 }))
+        await repo.save(mesa({ id: 'a5', number: 5, capacity: 8, status: 'ocupada' }))
+        await repo.save(mesa({ id: 'a6', number: 6, capacity: 8, status: 'reservada' }))
+        await repo.save(mesa({ id: 'b1', number: 1, capacity: 8, restaurantId: 'r2' }))
+    })
+
+    afterAll(async () => {
+        await db.close()
+    })
+
+    it('findAvailable devuelve solo mesas libres con capacidad suficiente, por capacidad y número', async () => {
+        const mesas = await repo.findAvailable('r1', 4)
+        expect(mesas.map(m => m.id)).toEqual(['a3', 'a4', 'a2'])
+    })
+
+    it('findAvailable no devuelve mesas de otros restaurantes', async () => {
+        const mesas = await repo.findAvailable('r1', 7)
+        expect(mesas).toEqual([])
+    })
+
+    it('updateStatus cambia el estado y la fecha de actualización', async () => {
+        await repo.updateStatus('a1', 'reservada', '2026-10-22T09:00:00.000Z')
+
+        const mesaActualizada = await repo.findById('a1')
+        expect(mesaActualizada?.status).toBe('reservada')
+        expect(mesaActualizada?.updatedAt).toBe('2026-10-22T09:00:00.000Z')
+    })
+
+    it('occupyIfFree ocupa una mesa libre y devuelve true', async () => {
+        expect(await repo.occupyIfFree('a3', 'r1', '2026-10-22T10:00:00.000Z')).toBe(true)
+
+        const ocupada = await repo.findById('a3')
+        expect(ocupada?.status).toBe('ocupada')
+        expect(ocupada?.updatedAt).toBe('2026-10-22T10:00:00.000Z')
+    })
+
+    it('occupyIfFree devuelve false en una segunda llamada sobre la misma mesa', async () => {
+        expect(await repo.occupyIfFree('a3', 'r1', '2026-10-22T10:01:00.000Z')).toBe(false)
+        expect((await repo.findById('a3'))?.updatedAt).toBe('2026-10-22T10:00:00.000Z')
+    })
+
+    it('occupyIfFree devuelve false si la mesa está reservada o es de otro restaurante', async () => {
+        expect(await repo.occupyIfFree('a6', 'r1', ahora)).toBe(false)
+        expect(await repo.occupyIfFree('b1', 'r1', ahora)).toBe(false)
+        expect((await repo.findById('b1'))?.status).toBe('libre')
+    })
+})
