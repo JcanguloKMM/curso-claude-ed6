@@ -8,7 +8,10 @@ import {
     InvalidTableDescriptionError,
     DuplicatedTableNumberError,
     TableNotFoundError,
-    TableOccupiedError
+    TableOccupiedError,
+    InvalidPeopleCountError,
+    TableCapacityExceededError,
+    TableNotAvailableError
 } from '@errors/DomainErrors.js'
 import { MockTableRepository } from '@repositories/mocks/MockTableRepository.js'
 import { TableService } from './table.service.js'
@@ -240,6 +243,61 @@ describe('TableService', () => {
         it('lanza TableNotFoundError si la mesa no existe o es de otro restaurante', async () => {
             await expect(service.changeStatus('r1', 'no-existe', 'libre')).rejects.toThrow(TableNotFoundError)
             await expect(service.changeStatus('r1', 'ajena', 'ocupada')).rejects.toThrow(TableNotFoundError)
+            expect((await repo.findById('ajena'))?.status).toBe('libre')
+        })
+    })
+
+    describe('listAvailable y occupy', () => {
+        beforeEach(async () => {
+            await repo.save(mesa({ id: 'g', number: 5, capacity: 6 }))
+            await repo.save(mesa({ id: 'p', number: 2, capacity: 2 }))
+            await repo.save(mesa({ id: 'm2', number: 4, capacity: 4 }))
+            await repo.save(mesa({ id: 'm1', number: 3, capacity: 4 }))
+            await repo.save(mesa({ id: 'oc', number: 1, capacity: 8, status: 'ocupada' }))
+            await repo.save(mesa({ id: 're', number: 6, capacity: 8, status: 'reservada' }))
+            await repo.save(mesa({ id: 'ajena', number: 1, capacity: 8, restaurantId: 'r2' }))
+        })
+
+        it('lista las mesas libres con capacidad suficiente, por capacidad y número', async () => {
+            const mesas = await service.listAvailable('r1', 4)
+            expect(mesas.map(m => m.id)).toEqual(['m1', 'm2', 'g'])
+        })
+
+        it('devuelve una lista vacía si no hay mesas para ese grupo', async () => {
+            expect(await service.listAvailable('r1', 7)).toEqual([])
+        })
+
+        it.each([0, -1, 2.5, '2', null, undefined, ['2']])('rechaza people = %s con InvalidPeopleCountError', async (people) => {
+            await expect(service.listAvailable('r1', people)).rejects.toThrow(InvalidPeopleCountError)
+            await expect(service.occupy('r1', 'm1', people)).rejects.toThrow(InvalidPeopleCountError)
+        })
+
+        it('ocupa una mesa libre y la devuelve ocupada', async () => {
+            const ocupada = await service.occupy('r1', 'm1', 4)
+
+            expect(ocupada).toMatchObject({ id: 'm1', status: 'ocupada', capacity: 4, createdAt: ahora })
+            expect(ocupada.updatedAt).not.toBe(ahora)
+            expect(await repo.findById('m1')).toEqual(ocupada)
+        })
+
+        it('una segunda ocupación de la misma mesa lanza TableNotAvailableError', async () => {
+            await service.occupy('r1', 'p', 1)
+            await expect(service.occupy('r1', 'p', 1)).rejects.toThrow(TableNotAvailableError)
+        })
+
+        it('no deja ocupar una mesa reservada', async () => {
+            await expect(service.occupy('r1', 're', 2)).rejects.toThrow(TableNotAvailableError)
+        })
+
+        it('lanza TableCapacityExceededError si el grupo no cabe, antes de comprobar si está libre', async () => {
+            await expect(service.occupy('r1', 'p', 3)).rejects.toThrow(TableCapacityExceededError)
+            await expect(service.occupy('r1', 'oc', 9)).rejects.toThrow(TableCapacityExceededError)
+            expect((await repo.findById('p'))?.status).toBe('libre')
+        })
+
+        it('lanza TableNotFoundError si la mesa no existe o es de otro restaurante', async () => {
+            await expect(service.occupy('r1', 'no-existe', 2)).rejects.toThrow(TableNotFoundError)
+            await expect(service.occupy('r1', 'ajena', 2)).rejects.toThrow(TableNotFoundError)
             expect((await repo.findById('ajena'))?.status).toBe('libre')
         })
     })
