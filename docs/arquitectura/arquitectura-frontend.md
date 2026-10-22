@@ -52,15 +52,16 @@ src/app/
 ├── app.routes.ts
 ├── core/
 │   ├── layout/            → shell.component.ts
-│   ├── models/            → dish, order, restaurant
-│   ├── services/          → dish, order, restaurant
+│   ├── models/            → dish, order, restaurant, table
+│   ├── services/          → dish, order, restaurant, table
 │   └── store/             → cart.store.ts
 └── features/
     ├── cart/cart.component.ts
     ├── menu/restaurant-menu.component.ts
     ├── orders/my-orders.component.ts
     ├── orders/order-detail.component.ts
-    └── restaurants/restaurant-list.component.ts
+    ├── restaurants/restaurant-list.component.ts
+    └── tables/table-selection.component.ts
 ```
 
 Ninguna de las tres aplicaciones tiene carpeta `shared/` propia: lo compartido vive en `@resttek/web-shared`.
@@ -107,18 +108,52 @@ export class DishStore {
 Caso particular en `web-empleados`:
 
 - `OrderStore` añade **polling cada 30 s** con `startPolling()` / `stopPolling()`, ya que la API no tiene websockets.
+- `TableStore` (feature `tables`) sigue el mismo patrón de polling cada 30 s.
 
 ### `web-clientes`: el patrón Store casi no se usa
 
-En `web-clientes` el patrón Store **no es la norma**: el único store real es `CartStore`, y es puramente local (sin HTTP) — vacía el carrito si añades un plato de otro restaurante, pero no envuelve ninguna llamada a la API.
+En `web-clientes` el patrón Store **no es la norma**: el único store real es `CartStore`, y es puramente local (sin HTTP) — vacía el carrito si añades un plato de otro restaurante, pero no envuelve ninguna llamada a la API. También recuerda la **mesa elegida** (`tableId`, `tableNumber`, `selectTable()`); `clearItems()` vacía los ítems conservando restaurante y mesa, y `clear()` lo reinicia todo. La mesa no se persiste: si el cliente recarga la página, la pierde.
 
 Para todo lo demás (restaurantes, carta/platos, confirmación y consulta de pedidos) los componentes de `features/` inyectan el `*Service` correspondiente directamente y llaman a sus métodos con `.subscribe({ next, error })`, sin pasar por ningún store ni por `firstValueFrom`:
 
 - `restaurant-list.component.ts` → `RestaurantService.getAll()`
+- `table-selection.component.ts` → `TableService.getAvailable()` y `TableService.occupy()`
 - `restaurant-menu.component.ts` → `RestaurantService.getById()` y `DishService.getByRestaurant()`
-- `cart.component.ts` (`confirmOrder()`) → `OrderService.createOrder()`
+- `cart.component.ts` (`confirmOrder()`) → `OrderService.createOrder()`, que envía el `tableId` de la mesa elegida
 - `my-orders.component.ts` → `OrderService.getMyOrders()`, con **polling cada 10 s** mediante `setInterval`/`clearInterval` en el propio componente
 - `order-detail.component.ts` → `OrderService.getOrderById()`, con **polling cada 5 s**, también con `setInterval`/`clearInterval` en el propio componente
+
+---
+
+## Gestión de mesas en los frontends
+
+La issue #5 añade la entidad *mesa* a las tres aplicaciones. Todas consumen el contrato [`docs/api/openapi-mesas.yaml`](../api/openapi-mesas.yaml) y leen el mensaje de error con `err.error?.message ?? err.error?.error`, porque los errores de middleware (401/403) solo traen `{ error }` en inglés. Para esos casos y para los errores de red muestran un texto propio en español.
+
+### `web-admin`: CRUD de mesas
+
+- Feature `features/tables/`, que replica `ingredients`: modelo, `TableService`, `TableStore`, `TableListComponent`, `TableFormComponent` y `TABLE_ROUTES` (`''`, `new`, `:id/edit`).
+- Ruta hija `tables` de `restaurants/:restaurantId`, enlace "Mesas" en el sidebar y tarjeta en el dashboard del restaurante.
+- **Solo el `admin` ve** "Nueva mesa", editar y borrar. El `manager` ve el listado **en solo lectura**, porque la API restringe el alta, la edición y el borrado al `admin`.
+- El formulario de edición solo envía `status` si el admin lo ha cambiado, para no pisar un cambio de estado hecho por un empleado mientras tanto.
+- El 409 al borrar una mesa ocupada se muestra como aviso en el listado.
+
+### `web-empleados`: página `mesas`
+
+- Feature `features/tables/` con `TableService` (listado y `PATCH` de estado) y `TableStore` con polling cada 30 s.
+- Ruta `mesas` y enlace "Mesas" en el shell, visible para todos los roles con restaurante (`restaurantId` sale de `AuthStore`).
+- Rejilla de mesas con número, capacidad, descripción y estado con color, y un selector para cambiar el estado.
+- Cada mesa `ocupada` lista los ítems sin entregar de sus pedidos activos, agrupando `OrderStore.orders()` por `tableId`. La página arranca y para el polling de ambos stores.
+- Cocina, barra y salón muestran `Mesa {{ order.tableNumber ?? order.tableId }}` en lugar del id en bruto.
+
+### `web-clientes`: paso de selección de mesa
+
+El flujo del cliente pasa a ser: lista de restaurantes → **`restaurants/:id/table`** → carta → carrito.
+
+1. `TableSelectionComponent` pide el número de personas y muestra las mesas libres con capacidad suficiente (`GET /public/restaurants/:id/tables?people=N`).
+2. Al continuar, ocupa la mesa (`POST /restaurants/:id/tables/:tableId/occupy`), la guarda con `cartStore.selectTable()` y navega a la carta. Si la API responde 409 (otro cliente la acaba de ocupar), avisa y recarga la lista.
+3. Si el cliente ya tiene mesa para ese restaurante, el paso redirige directamente a la carta; la carta, a su vez, redirige a este paso si no hay mesa.
+4. El pedido se crea con el `tableId` de la mesa y, tras confirmarlo, se vacían solo los ítems (`clearItems()`) para poder volver a pedir desde la misma mesa.
+5. Se muestra "Mesa N" en el carrito, el detalle del pedido y "Mis pedidos" cuando `tableNumber` no es `null`.
 
 ---
 

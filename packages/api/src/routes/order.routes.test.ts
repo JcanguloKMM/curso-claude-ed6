@@ -125,4 +125,75 @@ describe('Autorización de rutas de pedidos (H-03)', () => {
             expect(res.status).toBe(404)
         })
     })
+
+    describe('Número de mesa (tableNumber) en los pedidos', () => {
+        const clienteMesas = token({ id: 'cliente-mesas', role: 'cliente', restaurantId: null })
+
+        const crearPedido = async (id: string, restaurantId: string, tableId: string | null) => {
+            await dbConfig.run('INSERT INTO orders (id, restaurant_id, table_id, client_id, created_at) VALUES (?, ?, ?, ?, ?)', [id, restaurantId, tableId, 'cliente-mesas', new Date().toISOString()])
+            await dbConfig.run('INSERT INTO order_items (id, order_id, dish_id, quantity, notes, status) VALUES (?, ?, ?, ?, ?, ?)', [`item-${id}`, id, `dish-${restaurantId}`, 1, null, 'pendiente'])
+        }
+
+        beforeAll(async () => {
+            const ahora = new Date().toISOString()
+            const mesas: [string, string, number][] = [['mesa-a-7', 'rest-a', 7], ['mesa-b-3', 'rest-b', 3]]
+            for (const [id, restaurantId, number] of mesas) {
+                await dbConfig.run(
+                    'INSERT INTO restaurant_tables (id, restaurant_id, number, description, capacity, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    [id, restaurantId, number, null, 4, 'ocupada', ahora, ahora]
+                )
+            }
+            await crearPedido('order-mesa', 'rest-a', 'mesa-a-7')
+            await crearPedido('order-antiguo', 'rest-a', '5')
+            await crearPedido('order-mesa-ajena', 'rest-a', 'mesa-b-3')
+        })
+
+        const numeros = (pedidos: any[]) => Object.fromEntries(pedidos.map(p => [p.id, p.tableNumber]))
+
+        it('GET /orders/:id devuelve el número de la mesa del pedido', async () => {
+            const res = await request(app).get('/api/v1/orders/order-mesa').set(auth(cocineroA))
+            expect(res.status).toBe(200)
+            expect(res.body).toMatchObject({ tableId: 'mesa-a-7', tableNumber: 7, restaurantName: 'rest-a' })
+        })
+
+        it('GET /orders/:id devuelve tableNumber null si el pedido no tiene mesa', async () => {
+            const res = await request(app).get('/api/v1/orders/order-a').set(auth(clienteDueno))
+            expect(res.status).toBe(200)
+            expect(res.body).toHaveProperty('tableNumber', null)
+        })
+
+        it('GET /orders/active incluye tableNumber en cada pedido', async () => {
+            const res = await request(app).get('/api/v1/orders/active').set(auth(cocineroA))
+            expect(res.status).toBe(200)
+            expect(numeros(res.body)).toEqual({
+                'order-a': null,
+                'order-mesa': 7,
+                'order-antiguo': null,
+                'order-mesa-ajena': null
+            })
+        })
+
+        it('GET /orders/mine incluye tableNumber en cada pedido', async () => {
+            const res = await request(app).get('/api/v1/orders/mine').set(auth(clienteMesas))
+            expect(res.status).toBe(200)
+            expect(numeros(res.body)).toEqual({
+                'order-mesa': 7,
+                'order-antiguo': null,
+                'order-mesa-ajena': null
+            })
+        })
+
+        it('POST /orders guarda el tableId recibido y su detalle devuelve el número de mesa', async () => {
+            const alta = await request(app)
+                .post('/api/v1/orders')
+                .set(auth(clienteMesas))
+                .send({ restaurantId: 'rest-a', tableId: 'mesa-a-7', items: [{ dishId: 'dish-rest-a', quantity: 1, notes: null }] })
+            expect(alta.status).toBe(201)
+            expect(alta.body.tableId).toBe('mesa-a-7')
+            expect(alta.body).not.toHaveProperty('tableNumber')
+
+            const detalle = await request(app).get(`/api/v1/orders/${alta.body.id}`).set(auth(clienteMesas))
+            expect(detalle.body.tableNumber).toBe(7)
+        })
+    })
 })

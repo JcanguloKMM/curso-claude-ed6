@@ -1,0 +1,1338 @@
+openapi: 3.1.0
+info:
+  title: Resttek API - Gestión de mesas (issue #5)
+  version: 1.0.0
+  description: |
+    Contrato de lo que la issue #5 ("Gestión de mesas") añade o cambia en la API de Resttek.
+    No documenta la API completa: solo los endpoints de mesas y los endpoints de pedidos
+    que ganan el campo `tableNumber` (o que reciben `tableId`).
+
+    ## Convenciones (las mismas que ya sigue la API)
+
+    - **Prefijo:** todas las rutas cuelgan de `/api/v1`. Los frontends usan `API_URL = '/api/v1'`
+      y el proxy de Angular reenvía `/api` a `http://localhost:3000`.
+    - **JSON en camelCase.** Los cuerpos de petición deben enviarse con `Content-Type: application/json`.
+    - **Listas:** se devuelven como **array plano** (`[...]`), sin envoltorio ni paginación.
+    - **Fechas:** cadenas ISO 8601 en UTC con milisegundos (`2026-10-22T09:30:00.000Z`),
+      generadas con `Date.prototype.toISOString()`.
+    - **Nulos en `Table`:** los campos que admiten `null` (`description`) **siempre están presentes**;
+      nunca se omiten.
+    - **Tipos numéricos estrictos:** `number`, `capacity` y `people` del cuerpo deben ser números JSON
+      enteros. Un string (`"4"`) se rechaza con 400. En los formularios Angular usad
+      `<input type="number">` con `ngModel` o convertid con `Number(...)` antes de enviar.
+    - **Estados de mesa:** en minúsculas (`libre`, `ocupada`, `reservada`). La API los normaliza
+      (`trim` + minúsculas) al recibirlos, así que `" Libre "` se acepta, pero los clientes
+      deben enviar siempre el valor canónico. En las respuestas siempre van en minúsculas.
+    - **Identificadores:** strings opacos. Las mesas creadas por la API usan UUID v4; las del seed
+      tienen ids fijos (`mesa-rest-1-1`). No asumáis formato UUID.
+
+    ## Formato de error
+
+    Hay **dos formatos** de cuerpo de error y los clientes deben tolerar ambos:
+
+    1. **Error de dominio** (`DomainError`), producido por el `errorHandler` a partir de un `AppError`:
+       `{ "error": "<NombreDeLaClase>", "message": "<texto legible>" }`.
+       El campo `error` es estable y es el que deben usar los frontends para decidir qué hacer;
+       el `message` es informativo (en español para los errores de mesas) y puede cambiar.
+       Códigos: 404 para `*NotFoundError`, 403 para `ForbiddenError`, 401 para
+       `InvalidCredentialsError`, **409 para `DuplicatedTableNumberError`, `TableOccupiedError`
+       y `TableNotAvailableError` (nuevo)**, y 400 para cualquier otro error de dominio.
+    2. **Error de middleware** (`MiddlewareError`), producido por `authenticate`/`authorize`/
+       `authorizeRestaurant` antes de llegar al controlador: solo `{ "error": "<texto>" }`, sin `message`.
+       - 401: `Unauthorized: No token provided`, `Unauthorized: Malformed token`, `Unauthorized: Invalid token`.
+       - 403: `Forbidden: Insufficient permissions`.
+
+    Cualquier error no controlado devuelve 500 `{ "error": "InternalServerError", "message": "Something went wrong" }`.
+
+    El `errorInterceptor` de `@resttek/web-shared` ya redirige a `/login` ante cualquier 401.
+
+    ## Orden de evaluación
+
+    En las rutas privadas los middlewares se evalúan en este orden y el primero que falla responde:
+    `authenticate` (401) → `authorize(roles)` (403) → `authorizeRestaurant` (403) → controlador.
+    Por tanto, un empleado de otro restaurante recibe 403 aunque la mesa no exista.
+    Dentro del controlador/servicio, el orden de las validaciones de cada operación se indica en
+    su descripción.
+
+    ## Aislamiento entre restaurantes
+
+    Todas las operaciones sobre una mesa concreta buscan por `id` **y** `restaurantId` de la URL.
+    Si la mesa existe pero pertenece a otro restaurante, la respuesta es 404 `TableNotFoundError`
+    (no se filtra su existencia).
+
+    ## Datos de prueba (tras `npm run seed`)
+
+    | id | restaurante | número | capacidad | descripción | estado |
+    | --- | --- | --- | --- | --- | --- |
+    | `mesa-rest-1-1` | `rest-1` | 1 | 2 | Junto a la ventana | `ocupada` (tiene el pedido de ejemplo) |
+    | `mesa-rest-1-2` | `rest-1` | 2 | 2 | `null` | `libre` |
+    | `mesa-rest-1-3` | `rest-1` | 3 | 4 | Terraza | `libre` |
+    | `mesa-rest-1-4` | `rest-1` | 4 | 4 | `null` | `reservada` |
+    | `mesa-rest-1-5` | `rest-1` | 5 | 6 | Salón principal | `libre` |
+    | `mesa-rest-1-6` | `rest-1` | 6 | 8 | Reservado para grupos | `libre` |
+    | `mesa-rest-2-1` | `rest-2` | 1 | 2 | `null` | `libre` |
+    | `mesa-rest-2-2` | `rest-2` | 2 | 4 | Terraza | `libre` |
+    | `mesa-rest-2-3` | `rest-2` | 3 | 4 | `null` | `libre` |
+    | `mesa-rest-2-4` | `rest-2` | 4 | 6 | `null` | `libre` |
+
+    El seed deja **un único pedido** de ejemplo, con id fijo `order-seed-1`, en `rest-1` y asociado a
+    `mesa-rest-1-1` (`tableNumber: 1`). Sus ítems también tienen ids fijos (`order-seed-1-item-1`,
+    `order-seed-1-item-2`...).
+
+    El seed usa `INSERT OR IGNORE` con ids fijos, así que es idempotente: ejecutarlo varias veces no duplica
+    mesas ni pedidos, pero tampoco restablece los estados que hayáis cambiado en una BD ya sembrada.
+servers:
+  - url: /
+    description: |
+      Mismo origen. En desarrollo la API escucha en `http://localhost:3000` (`npm run dev:api`)
+      y los frontends la alcanzan por el proxy `/api` de Angular.
+tags:
+  - name: Mesas
+    description: Gestión de mesas de un restaurante (personal y administrador).
+  - name: Mesas (público)
+    description: Consulta de mesas disponibles sin autenticación.
+  - name: Pedidos
+    description: Endpoints de pedidos existentes que cambian con esta issue.
+
+paths:
+  /api/v1/restaurants/{restaurantId}/tables:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+    get:
+      tags: [Mesas]
+      operationId: listTables
+      summary: Lista las mesas del restaurante
+      description: |
+        Devuelve todas las mesas del restaurante (cualquier estado), ordenadas por `number` ascendente.
+
+        **Roles:** `admin` (cualquier restaurante), `manager`, `camarero`, `cocinero` (solo su restaurante).
+        Middlewares: `authenticate`, `authorize(['admin','manager','camarero','cocinero'])`, `authorizeRestaurant`.
+
+        Si el restaurante no existe o no tiene mesas, responde 200 con `[]` (no se comprueba la existencia
+        del restaurante, igual que en ingredientes y platos).
+      x-roles: [admin, manager, camarero, cocinero]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Mesas del restaurante ordenadas por número.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Table'
+              examples:
+                mesas:
+                  summary: Mesas de rest-1
+                  value:
+                    - id: mesa-rest-1-1
+                      restaurantId: rest-1
+                      number: 1
+                      description: Junto a la ventana
+                      capacity: 2
+                      status: ocupada
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:05:00.000Z'
+                    - id: mesa-rest-1-2
+                      restaurantId: rest-1
+                      number: 2
+                      description: null
+                      capacity: 2
+                      status: libre
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                    - id: mesa-rest-1-3
+                      restaurantId: rest-1
+                      number: 3
+                      description: Terraza
+                      capacity: 4
+                      status: libre
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                    - id: mesa-rest-1-4
+                      restaurantId: rest-1
+                      number: 4
+                      description: null
+                      capacity: 4
+                      status: reservada
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                vacia:
+                  summary: Restaurante sin mesas
+                  value: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+    post:
+      tags: [Mesas]
+      operationId: createTable
+      summary: Crea una mesa
+      description: |
+        **Roles:** solo `admin`.
+        Middlewares: `authenticate`, `authorize(['admin'])`.
+
+        Reglas y orden de validación:
+        1. `number`: número JSON entero ≥ 1 → si no, 400 `InvalidTableNumberError`.
+        2. `capacity`: número JSON entero ≥ 1 → si no, 400 `InvalidTableCapacityError`.
+        3. `description`: opcional. Se aplica `trim`; si se omite, es `null` o queda vacía tras el `trim`,
+           se guarda `null`. Si no es string ni `null` → 400 `InvalidTableDescriptionError`.
+        4. `status`: opcional, por defecto `libre`. Se normaliza; valor no válido → 400 `InvalidTableStatusError`.
+        5. `number` no repetido en el restaurante → si no, 409 `DuplicatedTableNumberError`.
+
+        El `restaurantId` se toma de la URL; si viene en el cuerpo se ignora.
+        No se comprueba que el restaurante exista: si no existe, la clave foránea falla y responde 500.
+      x-roles: [admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTableRequest'
+            examples:
+              completa:
+                summary: Con descripción y estado
+                value:
+                  number: 20
+                  description: Terraza
+                  capacity: 6
+                  status: libre
+              minima:
+                summary: Solo los obligatorios
+                value:
+                  number: 21
+                  capacity: 2
+      responses:
+        '201':
+          description: Mesa creada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Table'
+              example:
+                id: 3f6c1d9e-8a2b-4c7d-9e0f-1a2b3c4d5e6f
+                restaurantId: rest-1
+                number: 20
+                description: Terraza
+                capacity: 6
+                status: libre
+                createdAt: '2026-10-22T10:15:00.000Z'
+                updatedAt: '2026-10-22T10:15:00.000Z'
+        '400':
+          description: |
+            Datos no válidos. `error` puede ser `InvalidTableNumberError`, `InvalidTableCapacityError`,
+            `InvalidTableDescriptionError` o `InvalidTableStatusError`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                InvalidTableNumberError:
+                  $ref: '#/components/examples/InvalidTableNumberError'
+                InvalidTableCapacityError:
+                  $ref: '#/components/examples/InvalidTableCapacityError'
+                InvalidTableDescriptionError:
+                  $ref: '#/components/examples/InvalidTableDescriptionError'
+                InvalidTableStatusError:
+                  $ref: '#/components/examples/InvalidTableStatusError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '409':
+          description: Ya existe una mesa con ese número en el restaurante (`DuplicatedTableNumberError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                DuplicatedTableNumberError:
+                  $ref: '#/components/examples/DuplicatedTableNumberError'
+
+  /api/v1/restaurants/{restaurantId}/tables/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+      - $ref: '#/components/parameters/TableId'
+    get:
+      tags: [Mesas]
+      operationId: getTable
+      summary: Detalle de una mesa
+      description: |
+        **Roles:** `admin` (cualquier restaurante), `manager`, `camarero`, `cocinero` (solo su restaurante).
+        Middlewares: `authenticate`, `authorize(['admin','manager','camarero','cocinero'])`, `authorizeRestaurant`.
+
+        404 `TableNotFoundError` si la mesa no existe o es de otro restaurante.
+      x-roles: [admin, manager, camarero, cocinero]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: La mesa.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Table'
+              examples:
+                TableLibre:
+                  $ref: '#/components/examples/TableLibre'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+    put:
+      tags: [Mesas]
+      operationId: updateTable
+      summary: Actualiza una mesa
+      description: |
+        Reemplaza los datos editables de la mesa.
+
+        **Roles:** solo `admin`.
+        Middlewares: `authenticate`, `authorize(['admin'])`.
+
+        Semántica de los campos:
+        - `number` y `capacity`: **obligatorios**, mismas reglas que en la creación.
+        - `description`: si se omite o es `null`/vacía, la descripción **se borra** (queda `null`),
+          igual que en `PUT` de platos. Para conservarla hay que reenviarla.
+        - `status`: opcional. Si se omite, **se conserva el estado actual** (editar una mesa ocupada
+          no la libera). Si se envía, se normaliza y se aplica tal cual (el admin puede pasar cualquier
+          estado a cualquier otro).
+
+        Orden de validación: 404 `TableNotFoundError` (no existe o es de otro restaurante) →
+        400 `InvalidTableNumberError` → 400 `InvalidTableCapacityError` → 400 `InvalidTableDescriptionError` →
+        400 `InvalidTableStatusError` → 409 `DuplicatedTableNumberError` (otra mesa del mismo restaurante
+        ya tiene ese número; mantener el número propio no es conflicto).
+
+        `id`, `restaurantId` y `createdAt` no cambian; `updatedAt` se actualiza.
+      x-roles: [admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTableRequest'
+            examples:
+              conEstado:
+                summary: Cambia todos los campos
+                value:
+                  number: 3
+                  description: Terraza cubierta
+                  capacity: 5
+                  status: reservada
+              sinEstado:
+                summary: Conserva el estado actual
+                value:
+                  number: 3
+                  description: Terraza cubierta
+                  capacity: 5
+      responses:
+        '200':
+          description: Mesa actualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Table'
+              example:
+                id: mesa-rest-1-3
+                restaurantId: rest-1
+                number: 3
+                description: Terraza cubierta
+                capacity: 5
+                status: reservada
+                createdAt: '2026-10-22T08:00:00.000Z'
+                updatedAt: '2026-10-22T10:20:00.000Z'
+        '400':
+          description: |
+            Datos no válidos. `error` puede ser `InvalidTableNumberError`, `InvalidTableCapacityError`,
+            `InvalidTableDescriptionError` o `InvalidTableStatusError`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                InvalidTableNumberError:
+                  $ref: '#/components/examples/InvalidTableNumberError'
+                InvalidTableCapacityError:
+                  $ref: '#/components/examples/InvalidTableCapacityError'
+                InvalidTableDescriptionError:
+                  $ref: '#/components/examples/InvalidTableDescriptionError'
+                InvalidTableStatusError:
+                  $ref: '#/components/examples/InvalidTableStatusError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+        '409':
+          description: Otra mesa del restaurante ya tiene ese número (`DuplicatedTableNumberError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                DuplicatedTableNumberError:
+                  $ref: '#/components/examples/DuplicatedTableNumberError'
+    delete:
+      tags: [Mesas]
+      operationId: deleteTable
+      summary: Borra una mesa
+      description: |
+        **Roles:** solo `admin`.
+        Middlewares: `authenticate`, `authorize(['admin'])`.
+
+        Orden: 404 `TableNotFoundError` (no existe o es de otro restaurante) → 409 `TableOccupiedError`
+        si su estado es `ocupada`. Las mesas `libre` y `reservada` se pueden borrar.
+
+        Los pedidos que apuntaban a la mesa conservan su `tableId` y pasan a devolver `tableNumber: null`.
+      x-roles: [admin]
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Mesa borrada. Sin cuerpo.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+        '409':
+          description: La mesa está ocupada (`TableOccupiedError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                TableOccupiedError:
+                  $ref: '#/components/examples/TableOccupiedError'
+
+  /api/v1/restaurants/{restaurantId}/tables/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+      - $ref: '#/components/parameters/TableId'
+    patch:
+      tags: [Mesas]
+      operationId: changeTableStatus
+      summary: Cambia el estado de una mesa
+      description: |
+        Permite cualquier transición entre `libre`, `ocupada` y `reservada` (incluido dejar el mismo estado,
+        que responde 200 y actualiza `updatedAt`). Es la forma de liberar una mesa: no se libera sola al
+        entregar o pagar el pedido.
+
+        **Roles:** `admin` (cualquier restaurante), `manager`, `camarero`, `cocinero` (solo su restaurante).
+        Middlewares: `authenticate`, `authorize(['admin','manager','camarero','cocinero'])`, `authorizeRestaurant`.
+
+        Orden: 400 `InvalidTableStatusError` (falta `status`, no es string o no es un estado válido) →
+        404 `TableNotFoundError` (no existe o es de otro restaurante).
+      x-roles: [admin, manager, camarero, cocinero]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeTableStatusRequest'
+            example:
+              status: reservada
+      responses:
+        '200':
+          description: Mesa con el estado nuevo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Table'
+              example:
+                id: mesa-rest-1-2
+                restaurantId: rest-1
+                number: 2
+                description: null
+                capacity: 2
+                status: reservada
+                createdAt: '2026-10-22T08:00:00.000Z'
+                updatedAt: '2026-10-22T10:25:00.000Z'
+        '400':
+          description: Estado no válido (`InvalidTableStatusError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                InvalidTableStatusError:
+                  $ref: '#/components/examples/InvalidTableStatusError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+
+  /api/v1/restaurants/{restaurantId}/tables/{id}/occupy:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+      - $ref: '#/components/parameters/TableId'
+    post:
+      tags: [Mesas]
+      operationId: occupyTable
+      summary: El cliente ocupa una mesa libre
+      description: |
+        Paso previo a la carta en `web-clientes`. La ocupación es **atómica**
+        (`UPDATE ... WHERE id = ? AND restaurant_id = ? AND status = 'libre'`): si dos clientes intentan
+        ocupar la misma mesa a la vez, solo uno recibe 200 y el otro 409 `TableNotAvailableError`.
+        Ante un 409, el cliente debe avisar al usuario y volver a pedir las mesas disponibles.
+
+        **Roles:** solo `cliente`. No se aplica `authorizeRestaurant` (los clientes no tienen restaurante).
+        Middlewares: `authenticate`, `authorize(['cliente'])`.
+
+        Orden de validación:
+        1. `people`: número JSON entero ≥ 1 → si no, 400 `InvalidPeopleCountError`.
+        2. La mesa existe y es del restaurante de la URL → si no, 404 `TableNotFoundError`.
+        3. `people` ≤ `capacity` → si no, 400 `TableCapacityExceededError`.
+        4. La mesa está `libre` → si no (`ocupada` o `reservada`), 409 `TableNotAvailableError`.
+
+        La API no guarda qué cliente ocupa la mesa ni cuántas personas son; `people` solo se usa para validar.
+        Tras el 200, el cliente usa el `id` de la mesa como `tableId` al crear el pedido (`POST /api/v1/orders`).
+      x-roles: [cliente]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OccupyTableRequest'
+            example:
+              people: 4
+      responses:
+        '200':
+          description: Mesa ocupada. Se devuelve con `status` = `ocupada`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Table'
+              example:
+                id: mesa-rest-1-3
+                restaurantId: rest-1
+                number: 3
+                description: Terraza
+                capacity: 4
+                status: ocupada
+                createdAt: '2026-10-22T08:00:00.000Z'
+                updatedAt: '2026-10-22T10:30:00.000Z'
+        '400':
+          description: |
+            `people` no válido (`InvalidPeopleCountError`) o mayor que la capacidad de la mesa
+            (`TableCapacityExceededError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                InvalidPeopleCountError:
+                  $ref: '#/components/examples/InvalidPeopleCountError'
+                TableCapacityExceededError:
+                  $ref: '#/components/examples/TableCapacityExceededError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenByMiddleware'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+        '409':
+          description: La mesa ya no está libre (`TableNotAvailableError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                TableNotAvailableError:
+                  $ref: '#/components/examples/TableNotAvailableError'
+
+  /api/v1/public/restaurants/{restaurantId}/tables:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+    get:
+      tags: [Mesas (público)]
+      operationId: listAvailableTables
+      summary: Mesas libres con capacidad suficiente
+      description: |
+        Devuelve las mesas del restaurante con `status = 'libre'` y `capacity >= people`, ordenadas por
+        `capacity` ascendente y, a igual capacidad, por `number` ascendente (la primera es la que mejor se ajusta).
+
+        **Pública:** sin autenticación (como la carta). Si se envía un token, se ignora.
+
+        `people` es **obligatorio**. Si falta, se repite, no es un entero en base 10 sin signo ni decimales
+        o es menor que 1 → 400 `InvalidPeopleCountError`.
+
+        Si el restaurante no existe o no hay mesas que cumplan, responde 200 con `[]`.
+      security: []
+      parameters:
+        - name: people
+          in: query
+          required: true
+          description: Número de comensales. Entero ≥ 1 (`^[0-9]+$`).
+          schema:
+            type: integer
+            minimum: 1
+          example: 4
+      responses:
+        '200':
+          description: Mesas libres que admiten ese número de personas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Table'
+              examples:
+                disponibles:
+                  summary: rest-1 con people=4 (datos del seed)
+                  value:
+                    - id: mesa-rest-1-3
+                      restaurantId: rest-1
+                      number: 3
+                      description: Terraza
+                      capacity: 4
+                      status: libre
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                    - id: mesa-rest-1-5
+                      restaurantId: rest-1
+                      number: 5
+                      description: Salón principal
+                      capacity: 6
+                      status: libre
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                    - id: mesa-rest-1-6
+                      restaurantId: rest-1
+                      number: 6
+                      description: Reservado para grupos
+                      capacity: 8
+                      status: libre
+                      createdAt: '2026-10-22T08:00:00.000Z'
+                      updatedAt: '2026-10-22T08:00:00.000Z'
+                ninguna:
+                  summary: No hay mesas libres para ese grupo
+                  value: []
+        '400':
+          description: '`people` no válido (`InvalidPeopleCountError`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              examples:
+                InvalidPeopleCountError:
+                  $ref: '#/components/examples/InvalidPeopleCountError'
+
+  /api/v1/orders:
+    post:
+      tags: [Pedidos]
+      operationId: createOrder
+      summary: Crea un pedido (sin cambios de comportamiento; ahora se envía `tableId`)
+      description: |
+        Endpoint existente. Lo que cambia es el uso: `web-clientes` envía en `tableId` el **`id` de la mesa**
+        ocupada con `occupy` (no su número).
+
+        **Roles:** cualquier usuario autenticado (`authenticate`, sin `authorize`). El `clientId` del pedido es
+        el `id` del token.
+
+        Comportamiento actual que se mantiene:
+        - `restaurantId` vacío o ausente → 400 `RestaurantIdRequiredError`.
+        - `tableId` **no se valida** (puede ser `null`, omitirse o ser cualquier string). Validar que la mesa
+          existe, es del restaurante y está ocupada queda fuera de esta issue.
+        - Cada ítem con `quantity: N` se expande en N ítems de `quantity: 1`.
+        - Un `dishId` inexistente o un `items` ausente provocan 500 `InternalServerError`.
+
+        La respuesta 201 es el pedido tal como se construye en memoria (`CreatedOrder`): **no** incluye
+        `tableNumber`, `restaurantName`, `restaurantLogoUrl` ni los datos del plato en los ítems.
+        Para obtenerlos, pedid `GET /api/v1/orders/{id}`.
+      x-roles: [admin, manager, camarero, cocinero, cliente]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              restaurantId: rest-1
+              tableId: mesa-rest-1-3
+              items:
+                - dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+                  quantity: 2
+                  notes: Sin cebolla
+                - dishId: 9c8b7a6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d
+                  quantity: 1
+                  notes: null
+      responses:
+        '201':
+          description: Pedido creado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedOrder'
+              example:
+                id: 5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                restaurantId: rest-1
+                tableId: mesa-rest-1-3
+                clientId: c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
+                createdAt: '2026-10-22T10:35:00.000Z'
+                items:
+                  - id: 11111111-1111-4111-8111-111111111111
+                    dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+                    quantity: 1
+                    notes: Sin cebolla
+                    status: pendiente
+                  - id: 22222222-2222-4222-8222-222222222222
+                    dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+                    quantity: 1
+                    notes: Sin cebolla
+                    status: pendiente
+                  - id: 33333333-3333-4333-8333-333333333333
+                    dishId: 9c8b7a6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d
+                    quantity: 1
+                    notes: null
+                    status: pendiente
+        '400':
+          description: Falta `restaurantId` (`RestaurantIdRequiredError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              example:
+                error: RestaurantIdRequiredError
+                message: Restaurant ID is required
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/orders/active:
+    get:
+      tags: [Pedidos]
+      operationId: listActiveOrders
+      summary: Pedidos activos de un restaurante (gana `tableNumber`)
+      description: |
+        Pedidos del restaurante con al menos un ítem no `entregado`, ordenados por `createdAt` ascendente.
+        Cada pedido incluye **todos** sus ítems (también los ya entregados).
+
+        **Cambio:** cada pedido incluye `tableNumber`.
+        Este endpoint **no** incluye `restaurantName` ni `restaurantLogoUrl` (comportamiento actual).
+
+        **Roles:** `admin`, `manager`, `camarero`, `cocinero` (`authorize`). El admin debe indicar
+        `?restaurantId=`; para el resto se usa el `restaurantId` del token y el parámetro se ignora.
+        - Admin sin `restaurantId` → 400 `{ "error": "restaurantId is required" }` (sin `message`).
+        - Empleado sin restaurante en el token → 403 `ForbiddenError` (formato de dominio).
+        - `cliente` → 403 de middleware.
+      x-roles: [admin, manager, camarero, cocinero]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: restaurantId
+          in: query
+          required: false
+          description: Obligatorio solo para `admin`. Ignorado para el resto de roles.
+          schema:
+            type: string
+          example: rest-1
+      responses:
+        '200':
+          description: |
+            Pedidos activos. El ejemplo es **ilustrativo**: el segundo pedido (`tableId: '5'`, `tableNumber: null`)
+            representa un pedido antiguo cuyo `tableId` no es el id de ninguna mesa. El seed no crea ese pedido;
+            para probar el caso `tableNumber: null`, cread un pedido con `POST /api/v1/orders` sin `tableId`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ActiveOrder'
+              example:
+                - id: 5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                  restaurantId: rest-1
+                  tableId: mesa-rest-1-1
+                  tableNumber: 1
+                  clientId: null
+                  createdAt: '2026-10-22T08:05:00.000Z'
+                  items:
+                    - id: 11111111-1111-4111-8111-111111111111
+                      dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+                      quantity: 1
+                      notes: Sin cebolla
+                      status: pendiente
+                      dishName: Pizza Margarita
+                      dishPrice: 12.5
+                      dishCategory: principal
+                - id: 6b5c4d3e-2f1a-4b0c-9d8e-7f6a5b4c3d2e
+                  restaurantId: rest-1
+                  tableId: '5'
+                  tableNumber: null
+                  clientId: null
+                  createdAt: '2026-10-22T08:10:00.000Z'
+                  items:
+                    - id: 44444444-4444-4444-8444-444444444444
+                      dishId: 9c8b7a6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d
+                      quantity: 1
+                      notes: null
+                      status: preparando
+                      dishName: Refresco de Cola
+                      dishPrice: 2.5
+                      dishCategory: bebida
+        '400':
+          description: Admin sin `?restaurantId=`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiddlewareError'
+              example:
+                error: restaurantId is required
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Rol no permitido (formato de middleware) o empleado sin restaurante en el token
+            (`ForbiddenError`, formato de dominio).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - $ref: '#/components/schemas/DomainError'
+              examples:
+                rol:
+                  summary: Cliente (middleware)
+                  value:
+                    error: 'Forbidden: Insufficient permissions'
+                sinRestaurante:
+                  summary: Empleado sin restaurante (dominio)
+                  value:
+                    error: ForbiddenError
+                    message: 'Forbidden: Insufficient permissions'
+
+  /api/v1/orders/mine:
+    get:
+      tags: [Pedidos]
+      operationId: listMyOrders
+      summary: Pedidos del usuario autenticado (gana `tableNumber`)
+      description: |
+        Pedidos cuyo `clientId` es el `id` del token, ordenados por `createdAt` descendente.
+        Incluye `restaurantName` y `restaurantLogoUrl`.
+
+        **Cambio:** cada pedido incluye `tableNumber`.
+
+        **Roles:** cualquier usuario autenticado.
+      x-roles: [admin, manager, camarero, cocinero, cliente]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pedidos del usuario.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrderWithRestaurant'
+              example:
+                - id: 5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                  restaurantId: rest-1
+                  tableId: mesa-rest-1-3
+                  tableNumber: 3
+                  clientId: c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
+                  createdAt: '2026-10-22T10:35:00.000Z'
+                  restaurantName: Restaurante El Gourmet
+                  restaurantLogoUrl: null
+                  items:
+                    - id: 11111111-1111-4111-8111-111111111111
+                      dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+                      quantity: 1
+                      notes: Sin cebolla
+                      status: preparando
+                      dishName: Pizza Margarita
+                      dishPrice: 12.5
+                      dishCategory: principal
+                - id: 8d7c6b5a-4f3e-4d2c-9b1a-0f9e8d7c6b5a
+                  restaurantId: rest-2
+                  tableId: null
+                  tableNumber: null
+                  clientId: c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
+                  createdAt: '2026-10-21T20:00:00.000Z'
+                  restaurantName: Pizzería Napoli
+                  restaurantLogoUrl: null
+                  items:
+                    - id: 55555555-5555-4555-8555-555555555555
+                      dishId: 2e3f4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b
+                      quantity: 1
+                      notes: null
+                      status: entregado
+                      dishName: Pizza Napolitana
+                      dishPrice: 14
+                      dishCategory: principal
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/orders/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Id del pedido.
+        schema:
+          type: string
+    get:
+      tags: [Pedidos]
+      operationId: getOrder
+      summary: Detalle de un pedido (gana `tableNumber`)
+      description: |
+        **Cambio:** incluye `tableNumber`. Incluye `restaurantName` y `restaurantLogoUrl`.
+
+        **Roles:** cualquier usuario autenticado, pero solo puede verlo el `admin`, el cliente dueño
+        (`clientId` = `id` del token) o el personal (no `cliente`) del restaurante del pedido.
+        Orden: 404 `OrderNotFoundError` → 403 `ForbiddenError` (formato de dominio).
+      x-roles: [admin, manager, camarero, cocinero, cliente]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: El pedido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderWithRestaurant'
+              examples:
+                OrderWithRestaurant:
+                  $ref: '#/components/examples/OrderWithRestaurant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: El usuario no puede ver este pedido (`ForbiddenError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              example:
+                error: ForbiddenError
+                message: 'Forbidden: Insufficient permissions'
+        '404':
+          description: El pedido no existe (`OrderNotFoundError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainError'
+              example:
+                error: OrderNotFoundError
+                message: Order not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token HS256 obtenido en `POST /api/v1/auth/login`. Su payload incluye `id`, `role`
+        (`admin` | `manager` | `camarero` | `cocinero` | `cliente`) y `restaurantId` (`null` para `admin` y `cliente`).
+        La extensión `x-roles` de cada operación indica los roles admitidos.
+
+  parameters:
+    RestaurantId:
+      name: restaurantId
+      in: path
+      required: true
+      description: Id del restaurante (p. ej. `rest-1`).
+      schema:
+        type: string
+      example: rest-1
+    TableId:
+      name: id
+      in: path
+      required: true
+      description: Id de la mesa (no su número).
+      schema:
+        type: string
+      example: mesa-rest-1-3
+
+  schemas:
+    TableStatus:
+      type: string
+      enum: [libre, ocupada, reservada]
+      description: Estado de la mesa. Siempre en minúsculas en las respuestas.
+
+    Table:
+      type: object
+      additionalProperties: false
+      required: [id, restaurantId, number, description, capacity, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          description: Id opaco de la mesa (UUID v4 o id fijo del seed).
+          examples: [mesa-rest-1-3]
+        restaurantId:
+          type: string
+          examples: [rest-1]
+        number:
+          type: integer
+          minimum: 1
+          description: Número visible de la mesa. Único dentro del restaurante.
+          examples: [3]
+        description:
+          type: [string, 'null']
+          description: Descripción libre (ubicación, etc.). Siempre presente; `null` si no tiene.
+          examples: [Terraza]
+        capacity:
+          type: integer
+          minimum: 1
+          description: Número máximo de comensales.
+          examples: [4]
+        status:
+          $ref: '#/components/schemas/TableStatus'
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-10-22T08:00:00.000Z']
+        updatedAt:
+          type: string
+          format: date-time
+          description: Se actualiza en cada `PUT`, cambio de estado y ocupación.
+          examples: ['2026-10-22T08:00:00.000Z']
+
+    CreateTableRequest:
+      type: object
+      required: [number, capacity]
+      properties:
+        number:
+          type: integer
+          minimum: 1
+          description: Número JSON entero ≥ 1. Un string se rechaza (`InvalidTableNumberError`).
+        description:
+          type: [string, 'null']
+          description: Opcional. Se aplica `trim`; vacío u omitido → `null`.
+        capacity:
+          type: integer
+          minimum: 1
+          description: Número JSON entero ≥ 1. Un string se rechaza (`InvalidTableCapacityError`).
+        status:
+          $ref: '#/components/schemas/TableStatus'
+          description: Opcional. Por defecto `libre`.
+
+    UpdateTableRequest:
+      type: object
+      required: [number, capacity]
+      properties:
+        number:
+          type: integer
+          minimum: 1
+          description: Número JSON entero ≥ 1.
+        description:
+          type: [string, 'null']
+          description: Omitido, `null` o vacío tras `trim` → la descripción se borra (`null`).
+        capacity:
+          type: integer
+          minimum: 1
+          description: Número JSON entero ≥ 1.
+        status:
+          $ref: '#/components/schemas/TableStatus'
+          description: Opcional. Si se omite, se conserva el estado actual.
+
+    ChangeTableStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/TableStatus'
+
+    OccupyTableRequest:
+      type: object
+      required: [people]
+      properties:
+        people:
+          type: integer
+          minimum: 1
+          description: Número de comensales. Número JSON entero ≥ 1 y ≤ `capacity` de la mesa.
+
+    DomainError:
+      type: object
+      required: [error, message]
+      description: |
+        Error de dominio serializado por el `errorHandler`. `error` es el nombre de la clase del error
+        (estable, usadlo para decidir); `message` es informativo.
+      properties:
+        error:
+          type: string
+          examples: [TableNotFoundError]
+        message:
+          type: string
+          examples: [Mesa no encontrada]
+
+    MiddlewareError:
+      type: object
+      required: [error]
+      description: |
+        Error devuelto directamente por un middleware (`authenticate`, `authorize`, `authorizeRestaurant`)
+        o por el controlador de pedidos. Solo tiene `error`, con un texto en inglés; no lleva `message`.
+      properties:
+        error:
+          type: string
+          examples: ['Forbidden: Insufficient permissions']
+
+    OrderItemStatus:
+      type: string
+      enum: [pendiente, preparando, listo, entregado]
+
+    CreateOrderRequest:
+      type: object
+      required: [restaurantId, items]
+      properties:
+        restaurantId:
+          type: string
+        tableId:
+          type: [string, 'null']
+          description: Id de la mesa ocupada (`Table.id`). Opcional; `null` u omitido si no hay mesa. No se valida.
+        items:
+          type: array
+          items:
+            type: object
+            required: [dishId, quantity]
+            properties:
+              dishId:
+                type: string
+              quantity:
+                type: integer
+                minimum: 1
+                description: Se expande en `quantity` ítems de cantidad 1.
+              notes:
+                type: [string, 'null']
+                description: Enviad `null` si no hay notas; si se omite, el ítem de la respuesta 201 tampoco tendrá `notes`.
+
+    CreatedOrderItem:
+      type: object
+      required: [id, dishId, quantity, status]
+      properties:
+        id:
+          type: string
+        dishId:
+          type: string
+        quantity:
+          type: integer
+          const: 1
+        notes:
+          type: [string, 'null']
+          description: El valor enviado; ausente si no se envió.
+        status:
+          $ref: '#/components/schemas/OrderItemStatus'
+
+    CreatedOrder:
+      type: object
+      required: [id, restaurantId, tableId, clientId, createdAt, items]
+      description: Respuesta de `POST /api/v1/orders`. Sin `tableNumber` ni datos de restaurante o plato.
+      properties:
+        id:
+          type: string
+        restaurantId:
+          type: string
+        tableId:
+          type: [string, 'null']
+        clientId:
+          type: [string, 'null']
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreatedOrderItem'
+
+    OrderItem:
+      type: object
+      required: [id, dishId, quantity, notes, status, dishName, dishPrice, dishCategory]
+      properties:
+        id:
+          type: string
+        dishId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          description: Normalmente 1 (los pedidos se expanden al crearse); los datos antiguos del seed pueden tener más.
+        notes:
+          type: [string, 'null']
+        status:
+          $ref: '#/components/schemas/OrderItemStatus'
+        dishName:
+          type: [string, 'null']
+          description: '`null` si el plato ya no existe (LEFT JOIN).'
+        dishPrice:
+          type: [number, 'null']
+          description: '`null` si el plato ya no existe.'
+        dishCategory:
+          type: [string, 'null']
+          description: '`entrante` | `principal` | `postre` | `bebida`; `null` si el plato ya no existe.'
+
+    ActiveOrder:
+      type: object
+      required: [id, restaurantId, tableId, tableNumber, clientId, createdAt, items]
+      description: Pedido tal como lo devuelve `GET /api/v1/orders/active`.
+      properties:
+        id:
+          type: string
+        restaurantId:
+          type: string
+        tableId:
+          type: [string, 'null']
+          description: Id de la mesa (`Table.id`). En datos antiguos puede ser un texto que no es id de mesa.
+        tableNumber:
+          type: [integer, 'null']
+          description: |
+            **Nuevo.** `number` de la mesa cuyo `id` = `tableId` **y** pertenece al mismo restaurante del pedido.
+            `null` si el pedido no tiene mesa, si `tableId` no corresponde a ninguna mesa (datos antiguos o
+            mesa borrada) o si la mesa es de otro restaurante. Siempre presente.
+        clientId:
+          type: [string, 'null']
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    OrderWithRestaurant:
+      description: Pedido tal como lo devuelven `GET /api/v1/orders/mine` y `GET /api/v1/orders/{id}`.
+      allOf:
+        - $ref: '#/components/schemas/ActiveOrder'
+        - type: object
+          required: [restaurantName, restaurantLogoUrl]
+          properties:
+            restaurantName:
+              type: [string, 'null']
+              description: '`null` si el restaurante ya no existe (LEFT JOIN).'
+            restaurantLogoUrl:
+              type: [string, 'null']
+
+  responses:
+    Unauthorized:
+      description: Falta el token, está mal formado o no es válido.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          examples:
+            sinToken:
+              value:
+                error: 'Unauthorized: No token provided'
+            malFormado:
+              value:
+                error: 'Unauthorized: Malformed token'
+            invalido:
+              value:
+                error: 'Unauthorized: Invalid token'
+    ForbiddenByMiddleware:
+      description: |
+        El rol no está permitido (`authorize`) o el empleado no pertenece al restaurante de la URL
+        (`authorizeRestaurant`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MiddlewareError'
+          example:
+            error: 'Forbidden: Insufficient permissions'
+    TableNotFound:
+      description: La mesa no existe o pertenece a otro restaurante (`TableNotFoundError`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DomainError'
+          examples:
+            TableNotFoundError:
+              $ref: '#/components/examples/TableNotFoundError'
+    InternalServerError:
+      description: Error no controlado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DomainError'
+          example:
+            error: InternalServerError
+            message: Something went wrong
+
+  examples:
+    TableLibre:
+      summary: Mesa libre
+      value:
+        id: mesa-rest-1-3
+        restaurantId: rest-1
+        number: 3
+        description: Terraza
+        capacity: 4
+        status: libre
+        createdAt: '2026-10-22T08:00:00.000Z'
+        updatedAt: '2026-10-22T08:00:00.000Z'
+    OrderWithRestaurant:
+      summary: Pedido con mesa
+      value:
+        id: 5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+        restaurantId: rest-1
+        tableId: mesa-rest-1-3
+        tableNumber: 3
+        clientId: c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
+        createdAt: '2026-10-22T10:35:00.000Z'
+        restaurantName: Restaurante El Gourmet
+        restaurantLogoUrl: null
+        items:
+          - id: 11111111-1111-4111-8111-111111111111
+            dishId: 7b1e2c3d-4f5a-4b6c-8d9e-0f1a2b3c4d5e
+            quantity: 1
+            notes: Sin cebolla
+            status: preparando
+            dishName: Pizza Margarita
+            dishPrice: 12.5
+            dishCategory: principal
+    TableNotFoundError:
+      value:
+        error: TableNotFoundError
+        message: Mesa no encontrada
+    InvalidTableNumberError:
+      value:
+        error: InvalidTableNumberError
+        message: El número de mesa debe ser un entero mayor o igual que 1
+    InvalidTableCapacityError:
+      value:
+        error: InvalidTableCapacityError
+        message: La capacidad de la mesa debe ser un entero mayor o igual que 1
+    InvalidTableDescriptionError:
+      value:
+        error: InvalidTableDescriptionError
+        message: La descripción de la mesa debe ser un texto
+    InvalidTableStatusError:
+      value:
+        error: InvalidTableStatusError
+        message: 'Estado inválido: rota. Debe ser uno de: libre, ocupada, reservada'
+    DuplicatedTableNumberError:
+      value:
+        error: DuplicatedTableNumberError
+        message: Ya existe una mesa con ese número en el restaurante
+    TableOccupiedError:
+      value:
+        error: TableOccupiedError
+        message: No se puede borrar una mesa ocupada
+    TableNotAvailableError:
+      value:
+        error: TableNotAvailableError
+        message: La mesa no está libre
+    InvalidPeopleCountError:
+      value:
+        error: InvalidPeopleCountError
+        message: El número de personas debe ser un entero mayor o igual que 1
+    TableCapacityExceededError:
+      value:
+        error: TableCapacityExceededError
+        message: El número de personas supera la capacidad de la mesa

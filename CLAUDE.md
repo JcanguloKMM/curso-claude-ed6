@@ -33,7 +33,7 @@ Documentación detallada en `docs/arquitectura/` y `docs/dominio/`; léela antes
 Conviven **dos estilos** y hay que saber cuál aplica a cada dominio:
 
 - **Hexagonal + DDD** solo en `src/contexts/employee/` (domain → application → infrastructure). `Employee` es la única entidad de dominio real (constructor privado + `create()`); casos de uso como `LoginUseCase`; la composición de dependencias está en `infrastructure/http/dependencies.ts`. `src/contexts/shared/` contiene el value object `Email` y los middlewares/`errorHandler` de Express.
-- **Por capas** en `restaurant`, `dish`, `ingredient` y `order`: carpetas transversales `models/`, `repositories/`, `services/`, `controllers/`, `routes/`, un fichero por dominio. Aquí los modelos son `interface` planas y la validación vive en los servicios.
+- **Por capas** en `restaurant`, `dish`, `ingredient`, `order` y `table` (mesas; contrato en `docs/api/openapi-mesas.yaml`): carpetas transversales `models/`, `repositories/`, `services/`, `controllers/`, `routes/`, un fichero por dominio. Aquí los modelos son `interface` planas y la validación vive en los servicios.
 
 Otros puntos:
 - Los repositorios son interfaz + implementación SQLite, con mocks en `repositories/mocks/` y `application/mocks/` para los tests unitarios.
