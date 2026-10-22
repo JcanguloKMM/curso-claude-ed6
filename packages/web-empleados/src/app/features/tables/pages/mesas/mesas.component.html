@@ -1,0 +1,72 @@
+<div class="page-header">
+  <h1>Mesas</h1>
+</div>
+
+@if (tableStore.loading() && tableStore.tables().length === 0) {
+  <div class="spinner"></div>
+}
+
+@if (tableStore.error()) {
+  <div class="alert-error">{{ tableStore.error() }}</div>
+}
+
+@if (orderStore.error()) {
+  <div class="alert-error">{{ orderStore.error() }}</div>
+}
+
+@if (!tableStore.loading() || tableStore.tables().length > 0) {
+  @if (tableStore.tables().length === 0) {
+    <div class="empty-state">
+      <p>Este restaurante no tiene mesas</p>
+    </div>
+  } @else {
+    <div class="tables-grid">
+      @for (table of tableStore.tables(); track table.id) {
+        <div class="table-card" [class]="'table-card status-border-' + table.status">
+          <div class="table-header">
+            <span class="table-number">Mesa {{ table.number }}</span>
+            <span [class]="getStatusClass(table.status)">{{ table.status }}</span>
+          </div>
+          <div class="table-body">
+            <span class="table-capacity">Capacidad: {{ table.capacity }}</span>
+            @if (table.description) {
+              <span class="table-description">{{ table.description }}</span>
+            }
+          </div>
+          @if (table.status === 'ocupada') {
+            <div class="table-orders">
+              @let orders = ordersByTable().get(table.id) ?? [];
+              @if (orders.length === 0) {
+                <span class="orders-empty">Sin pedidos activos</span>
+              }
+              @for (order of orders; track order.id) {
+                <div class="table-order">
+                  <span class="table-order-id">Pedido #{{ order.id.substring(0, 8) }}</span>
+                  @for (item of order.items; track item.id) {
+                    <div class="table-order-item">
+                      <span class="item-name">{{ item.quantity }}x {{ item.dishName || 'Producto' }}</span>
+                      <span [class]="getItemStatusClass(item.status)">{{ item.status }}</span>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          }
+          <div class="table-footer">
+            <label class="status-label" [for]="'status-' + table.id">Estado</label>
+            <select
+              class="status-select"
+              [id]="'status-' + table.id"
+              [disabled]="changingId() === table.id"
+              (change)="onStatusChange(table, $event)"
+            >
+              @for (status of statuses; track status) {
+                <option [value]="status" [selected]="status === table.status">{{ status }}</option>
+              }
+            </select>
+          </div>
+        </div>
+      }
+    </div>
+  }
+}
