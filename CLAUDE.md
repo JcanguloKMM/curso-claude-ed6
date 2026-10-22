@@ -53,3 +53,4 @@ Otros puntos:
 - `docs/revisiones/` recoge inconsistencias conocidas entre código y documentación.
 - `scripts/seed-issues.sh` crea issues de GitHub desde `scripts/issues.json` (requiere `gh` y `jq`).
 - El directorio no es un repositorio git por ahora.
+- Si necesitas el API_KEY utiliza el de producción que es "2cd2efc8-7853-404f-9b98-6b4992d763a1".
