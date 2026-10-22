@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import type { Order, OrderItem } from '@models/order.model.js'
 import { normalizeOrderStatus } from '@models/order.model.js'
 import type { OrderRepository } from '@repositories/order.repository.js'
-import { RestaurantIdRequiredError, OrderNotFoundError } from '@errors/DomainErrors.js'
+import { RestaurantIdRequiredError, OrderNotFoundError, ForbiddenError } from '@errors/DomainErrors.js'
 
 export interface CreateOrderRequest {
     restaurantId: string
@@ -14,6 +14,17 @@ export interface CreateOrderRequest {
         notes: string | null
     }[]
 }
+
+export interface AuthenticatedUser {
+    id: string
+    role: string
+    restaurantId: string | null
+}
+
+const esAdmin = (user: AuthenticatedUser): boolean => user.role === 'admin'
+
+const esPersonalDelRestaurante = (user: AuthenticatedUser, restaurantId: string): boolean =>
+    user.role !== 'cliente' && user.restaurantId !== null && user.restaurantId === restaurantId
 
 export class OrderService {
     constructor(private readonly orderRepository: OrderRepository) {}
@@ -50,14 +61,22 @@ export class OrderService {
         return order
     }
 
-    async listActive(restaurantId: string): Promise<Order[]> {
+    async listActive(user: AuthenticatedUser, requestedRestaurantId: string): Promise<Order[]> {
+        const restaurantId = esAdmin(user) ? requestedRestaurantId : user.restaurantId
+        if (!restaurantId) {
+            throw new ForbiddenError()
+        }
         return this.orderRepository.findActiveByRestaurant(restaurantId)
     }
 
-    async getById(orderId: string): Promise<Order> {
+    async getById(orderId: string, user: AuthenticatedUser): Promise<Order> {
         const order = await this.orderRepository.findById(orderId)
         if (!order) {
             throw new OrderNotFoundError()
+        }
+        const esDueno = order.clientId !== null && order.clientId === user.id
+        if (!esAdmin(user) && !esDueno && !esPersonalDelRestaurante(user, order.restaurantId)) {
+            throw new ForbiddenError()
         }
         return order
     }
@@ -66,10 +85,13 @@ export class OrderService {
         return this.orderRepository.findByClientId(clientId)
     }
 
-    async updateItemStatus(orderId: string, itemId: string, status: string): Promise<void> {
+    async updateItemStatus(orderId: string, itemId: string, status: string, user: AuthenticatedUser): Promise<void> {
         const order = await this.orderRepository.findById(orderId)
         if (!order) {
             throw new OrderNotFoundError()
+        }
+        if (!esAdmin(user) && !esPersonalDelRestaurante(user, order.restaurantId)) {
+            throw new ForbiddenError()
         }
 
         const item = order.items.find(i => i.id === itemId)
