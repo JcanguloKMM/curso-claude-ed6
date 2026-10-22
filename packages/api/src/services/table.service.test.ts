@@ -7,7 +7,8 @@ import {
     InvalidTableCapacityError,
     InvalidTableDescriptionError,
     DuplicatedTableNumberError,
-    TableNotFoundError
+    TableNotFoundError,
+    TableOccupiedError
 } from '@errors/DomainErrors.js'
 import { MockTableRepository } from '@repositories/mocks/MockTableRepository.js'
 import { TableService } from './table.service.js'
@@ -160,6 +161,51 @@ describe('TableService', () => {
             await expect(service.update('r1', 't1', { number: 1, capacity: 0 })).rejects.toThrow(InvalidTableCapacityError)
             await expect(service.update('r1', 't1', { number: 1, capacity: 2, description: [] })).rejects.toThrow(InvalidTableDescriptionError)
             await expect(service.update('r1', 't1', { number: 1, capacity: 2, status: 'rota' })).rejects.toThrow(InvalidTableStatusError)
+        })
+    })
+
+    describe('listByRestaurant, getById y delete', () => {
+        beforeEach(async () => {
+            await repo.save(mesa({ id: 't3', number: 3 }))
+            await repo.save(mesa({ id: 't1', number: 1, status: 'ocupada' }))
+            await repo.save(mesa({ id: 't2', number: 2, status: 'reservada' }))
+            await repo.save(mesa({ id: 'ajena', number: 1, restaurantId: 'r2' }))
+        })
+
+        it('lista las mesas del restaurante ordenadas por número', async () => {
+            const mesas = await service.listByRestaurant('r1')
+            expect(mesas.map(m => m.id)).toEqual(['t1', 't2', 't3'])
+        })
+
+        it('devuelve una lista vacía si el restaurante no tiene mesas', async () => {
+            expect(await service.listByRestaurant('sin-mesas')).toEqual([])
+        })
+
+        it('obtiene una mesa del restaurante por id', async () => {
+            expect((await service.getById('r1', 't2')).number).toBe(2)
+        })
+
+        it('lanza TableNotFoundError al obtener una mesa inexistente o de otro restaurante', async () => {
+            await expect(service.getById('r1', 'no-existe')).rejects.toThrow(TableNotFoundError)
+            await expect(service.getById('r1', 'ajena')).rejects.toThrow(TableNotFoundError)
+        })
+
+        it('borra una mesa libre o reservada', async () => {
+            await service.delete('r1', 't3')
+            await service.delete('r1', 't2')
+            expect(await repo.findById('t3')).toBeNull()
+            expect(await repo.findById('t2')).toBeNull()
+        })
+
+        it('lanza TableOccupiedError al borrar una mesa ocupada y no la borra', async () => {
+            await expect(service.delete('r1', 't1')).rejects.toThrow(TableOccupiedError)
+            expect(await repo.findById('t1')).not.toBeNull()
+        })
+
+        it('lanza TableNotFoundError al borrar una mesa inexistente o de otro restaurante', async () => {
+            await expect(service.delete('r1', 'no-existe')).rejects.toThrow(TableNotFoundError)
+            await expect(service.delete('r1', 'ajena')).rejects.toThrow(TableNotFoundError)
+            expect(await repo.findById('ajena')).not.toBeNull()
         })
     })
 })

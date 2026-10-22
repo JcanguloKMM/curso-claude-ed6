@@ -7,7 +7,8 @@ import {
     InvalidTableCapacityError,
     InvalidTableDescriptionError,
     DuplicatedTableNumberError,
-    TableNotFoundError
+    TableNotFoundError,
+    TableOccupiedError
 } from '@errors/DomainErrors.js'
 
 // Los valores llegan sin tipar desde el cuerpo HTTP; la validación vive aquí
@@ -67,6 +68,22 @@ export class TableService {
         await this.ensureNumberIsFree(updated)
         await this.tableRepository.save(updated)
         return updated
+    }
+
+    async listByRestaurant(restaurantId: string): Promise<Table[]> {
+        return this.tableRepository.findByRestaurantId(restaurantId)
+    }
+
+    async getById(restaurantId: string, id: string): Promise<Table> {
+        return this.findOwnTable(restaurantId, id)
+    }
+
+    async delete(restaurantId: string, id: string): Promise<void> {
+        const existing = await this.findOwnTable(restaurantId, id)
+        if (existing.status === 'ocupada') {
+            throw new TableOccupiedError()
+        }
+        await this.tableRepository.delete(id)
     }
 
     private async findOwnTable(restaurantId: string, id: string): Promise<Table> {
