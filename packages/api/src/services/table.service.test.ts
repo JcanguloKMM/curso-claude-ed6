@@ -208,4 +208,39 @@ describe('TableService', () => {
             expect(await repo.findById('ajena')).not.toBeNull()
         })
     })
+
+    describe('changeStatus', () => {
+        beforeEach(async () => {
+            await repo.save(mesa({ id: 't1', number: 1, status: 'ocupada' }))
+            await repo.save(mesa({ id: 'ajena', number: 1, restaurantId: 'r2' }))
+        })
+
+        it('cambia el estado normalizado y actualiza updatedAt', async () => {
+            const actualizada = await service.changeStatus('r1', 't1', ' LIBRE ')
+
+            expect(actualizada).toMatchObject({ id: 't1', status: 'libre', createdAt: ahora })
+            expect(actualizada.updatedAt).not.toBe(ahora)
+            expect(await repo.findById('t1')).toEqual(actualizada)
+        })
+
+        it('acepta dejar el mismo estado', async () => {
+            await expect(service.changeStatus('r1', 't1', 'ocupada')).resolves.toMatchObject({ status: 'ocupada' })
+        })
+
+        it('lanza InvalidTableStatusError con un estado inválido o ausente', async () => {
+            await expect(service.changeStatus('r1', 't1', 'rota')).rejects.toThrow(InvalidTableStatusError)
+            await expect(service.changeStatus('r1', 't1', undefined)).rejects.toThrow(InvalidTableStatusError)
+            expect((await repo.findById('t1'))?.status).toBe('ocupada')
+        })
+
+        it('valida el estado antes de buscar la mesa', async () => {
+            await expect(service.changeStatus('r1', 'no-existe', 'rota')).rejects.toThrow(InvalidTableStatusError)
+        })
+
+        it('lanza TableNotFoundError si la mesa no existe o es de otro restaurante', async () => {
+            await expect(service.changeStatus('r1', 'no-existe', 'libre')).rejects.toThrow(TableNotFoundError)
+            await expect(service.changeStatus('r1', 'ajena', 'ocupada')).rejects.toThrow(TableNotFoundError)
+            expect((await repo.findById('ajena'))?.status).toBe('libre')
+        })
+    })
 })
